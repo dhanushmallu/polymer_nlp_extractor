@@ -11,7 +11,7 @@ app = FastAPI(
 app.include_router(setup.router, prefix="/api", tags=["Setup"])
 
 # Include GROBID API router
-app.include_router(grobid.router, prefix="/api", tags=["GROBID"])
+# app.include_router(grobid.router, prefix="/api", tags=["GROBID"])
 
 @app.get("/")
 def root():

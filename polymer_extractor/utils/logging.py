@@ -189,7 +189,9 @@ class Logger:
         file_name = os.path.basename(frame.filename)
         line_number = frame.lineno
         timestamp = datetime.now().isoformat() + "Z"
+
         stack_trace = traceback.format_exc() if error else ""
+        truncated_stack_trace = (stack_trace[:500] + "...") if len(stack_trace) > 500 else stack_trace
 
         entry = {
             "timestamp": timestamp,
@@ -199,13 +201,14 @@ class Logger:
             "event_type": event_type,
             "user_action": user_action,
             "context": context or {},
-            "stack_trace": stack_trace,
+            "stack_trace": truncated_stack_trace,
             "file_name": file_name,
             "line_number": line_number,
             "local_log_file": self.local_log_files[category],
             "synced_to_appwrite": False,
             "log_id": None
         }
+
 
         self._write_to_local(entry, category)
         log_id = self._sync_to_appwrite(entry)
@@ -231,3 +234,4 @@ class Logger:
 
     def critical(self, message: str, source: str, **kwargs):
         self.log("CRITICAL", message, source, **kwargs)
+
