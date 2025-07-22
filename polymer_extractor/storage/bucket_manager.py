@@ -269,6 +269,77 @@ class BucketManager:
                          source="bucket_manager", error=e, event_type="delete_file")
             raise
 
+
+    # === Get File by ID ===
+    def get_file(self, bucket_id: str, file_id: str) -> dict:
+        """
+        Retrieve details of a specific file in a bucket.
+
+        Parameters
+        ----------
+        bucket_id : str
+            ID of the bucket.
+        file_id : str
+            ID of the file.
+
+        Returns
+        -------
+        dict
+            File details.
+
+        Raises
+        ------
+        AppwriteException
+            If the API call fails.
+        """
+        try:
+            result = self.storage.get_file(bucket_id, file_id)
+            logger.debug(f"Fetched file '{file_id}' from bucket '{bucket_id}'",
+                         source="bucket_manager", event_type="get_file")
+            return result
+        except AppwriteException as e:
+            logger.error(f"Failed to fetch file '{file_id}' from bucket '{bucket_id}'",
+                         source="bucket_manager", error=e, event_type="get_file")
+            raise
+
+
+    # === Get file id from file name ===
+    def get_file_url(self, bucket_id: str, file_name: str) -> str:
+        """
+        Retrieve the file ID by its name in a specific bucket.
+
+        Parameters
+        ----------
+        bucket_id : str
+            ID of the bucket.
+        file_name : str
+            Name of the file to search for.
+
+        Returns
+        -------
+        str
+            File ID if found, otherwise None.
+
+        Raises
+        ------
+        AppwriteException
+            If the API call fails.
+        """
+        try:
+            files = self.list_files(bucket_id)
+            for file in files:
+                if file['name'] == file_name:
+                    logger.debug(f"Found file '{file_name}' with ID '{file['$id']}'",
+                                 source="bucket_manager", event_type="get_file_id_by_name")
+                    return file['$id']
+            logger.warning(f"File '{file_name}' not found in bucket '{bucket_id}'",
+                           source="bucket_manager", event_type="get_file_id_by_name")
+            return None
+        except AppwriteException as e:
+            logger.error(f"Failed to get file ID for '{file_name}' in bucket '{bucket_id}'",
+                         source="bucket_manager", error=e, event_type="get_file_id_by_name")
+            raise
+
     def list_files(self, bucket_id: str) -> list:
         """
         List all files in a specific bucket.

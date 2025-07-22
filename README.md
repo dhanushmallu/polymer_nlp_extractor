@@ -1,0 +1,2 @@
+- Requires Java Version <17
+- if using window, ensure git is installed

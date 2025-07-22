@@ -123,11 +123,13 @@ class SetupService:
             ("string", "file_name", 255, True),
             ("string", "doi", 255, False),
             ("string", "title", 255, False),
-            ("string", "authors", 1024, False),
+            ("string", "authors", 5000, False),
             ("string", "journal", 255, False),
             ("datetime", "published_on", None, False),
             ("string", "grobid_version", 50, False),
             ("datetime", "processed_on", None, False),
+            ("string", "file_url", 1024, False),
+            ("string", "pdf_url", 1024, False),
         ])
 
         self.create_collection("extraction_metadata", "Extraction Metadata", [
@@ -156,6 +158,16 @@ class SetupService:
             ("string", "source", 1024, False),
             ("integer", "size", None, False),
             ("string", "notes", 2048, False),
+            ("string", "original_filename", 255, False),
+            ("string", "file_type", 50, False),
+            ("datetime", "processed_at", None, False),
+            ("string", "file_url", 1024, False),
+            ("string", "appwrite_file_id", 255, False),
+            ("string", "local_path", 1024, False),
+            ("integer", "file_size", 2048, False),
+            ("string", "statistics", 2000, False),
+            ("string", "data_quality", 2000, False),
+            ("string", "columns", 2000, False),
         ])
 
         # === Buckets ===

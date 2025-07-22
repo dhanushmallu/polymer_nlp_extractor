@@ -19,10 +19,12 @@ __pycache__
 *.pytest_cache
 *.tox
 *.dist-info
+*_Zone.Identifier
+*.Identifier
 *.egg-info/
 
 # directories
 workspace/models/
 workspace/grobid-0.8.2/
 workspace/grobid-0.8.2.zip
-ref/
+ref

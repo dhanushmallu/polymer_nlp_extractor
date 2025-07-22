@@ -95,7 +95,7 @@ class Logger:
                             database_id=self.database_id,
                             collection_id=self.collection_id,
                             key=attr_name,
-                            size=512,  # Specify size for string attributes
+                            size=2048,  # Specify size for string attributes
                             required=not is_nullable
                         )
                     elif attr_type == "integer":
@@ -144,6 +144,16 @@ class Logger:
             if isinstance(entry.get("context"), dict):
                 entry["context"] = json.dumps(entry["context"], ensure_ascii=False)
 
+            # Truncate message to fit 512 char limit
+            if entry.get("message") and len(entry["message"]) > 512:
+                entry["message"] = entry["message"][:509] + "..."
+
+            # Ensure all string fields are within limits
+            string_fields = ["source", "event_type", "file_name", "local_log_file"]
+            for field in string_fields:
+                if entry.get(field) and len(str(entry[field])) > 512:
+                    entry[field] = str(entry[field])[:509] + "..."
+
             entry["log_id"] = ID.unique()  # Generate unique log ID
             response = self.databases.create_document(
                 database_id=self.database_id,
@@ -191,9 +201,25 @@ class Logger:
         timestamp = datetime.now().isoformat() + "Z"
 
         stack_trace = traceback.format_exc() if error else ""
-        truncated_stack_trace = (stack_trace[:500] + "...") if len(stack_trace) > 500 else stack_trace
-
+        full_stack_trace = traceback.format_exc() if error else None
         entry = {
+            "timestamp": timestamp,
+            "level": level,
+            "message": message,
+            "source": source,
+            "event_type": event_type,
+            "user_action": user_action,
+            "context": context or {},
+            "stack_trace": full_stack_trace,
+            "file_name": file_name,
+            "line_number": line_number,
+            "local_log_file": self.local_log_files[category],
+            "synced_to_appwrite": False,
+            "log_id": None
+        }
+
+        truncated_stack_trace = (stack_trace[:500] + "...") if len(stack_trace) > 500 else stack_trace
+        cloud_entry = {
             "timestamp": timestamp,
             "level": level,
             "message": message,
@@ -209,9 +235,8 @@ class Logger:
             "log_id": None
         }
 
-
         self._write_to_local(entry, category)
-        log_id = self._sync_to_appwrite(entry)
+        log_id = self._sync_to_appwrite(cloud_entry)
         if log_id:
             entry["synced_to_appwrite"] = True
             entry["log_id"] = log_id
@@ -223,7 +248,7 @@ class Logger:
     def info(self, message: str, source: str, **kwargs):
         self.log("INFO", message, source, **kwargs)
 
-    def error(self, message: str, source: str, error: Exception, **kwargs):
+    def error(self, message: str, source: str, error=None, **kwargs):
         self.log("ERROR", message, source, error=error, **kwargs)
 
     def debug(self, message: str, source: str, **kwargs):
@@ -234,4 +259,3 @@ class Logger:
 
     def critical(self, message: str, source: str, **kwargs):
         self.log("CRITICAL", message, source, **kwargs)
-
