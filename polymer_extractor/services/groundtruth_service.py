@@ -35,8 +35,7 @@ import pandas as pd
 from polymer_extractor.storage.bucket_manager import BucketManager
 from polymer_extractor.storage.database_manager import DatabaseManager
 from polymer_extractor.utils.logging import Logger
-from polymer_extractor.utils.paths import WORKSPACE_DIR
-
+from polymer_extractor.utils.paths import TESTING_DATA_DIR
 logger = Logger()
 
 
@@ -70,7 +69,7 @@ class GroundTruthService:
         self.bucket_manager = BucketManager()
 
         # Ensure ground truth directory exists
-        self.ground_truth_dir = Path(WORKSPACE_DIR) / "ground_truth"
+        self.ground_truth_dir = Path(TESTING_DATA_DIR)
         self.ground_truth_dir.mkdir(parents=True, exist_ok=True)
 
         logger.info("Ground Truth Service initialized", source="GroundTruthService")
@@ -832,7 +831,7 @@ class GroundTruthService:
             Path to saved file.
         """
         try:
-            output_path = self.ground_truth_dir / f"{filename_stem}_processed.csv"
+            output_path = self.ground_truth_dir / f"{filename_stem}.csv"
             df.to_csv(output_path, index=False, encoding='utf-8')
 
             logger.info(f"Saved processed ground truth locally: {output_path}",

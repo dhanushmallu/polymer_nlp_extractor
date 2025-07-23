@@ -11,6 +11,7 @@ scikit-learn>=1.1.0
 spacy>=3.5.0
 weasyprint
 reportlab
+pandas-stubs>=2.3.0
 
 
 # Data Processing

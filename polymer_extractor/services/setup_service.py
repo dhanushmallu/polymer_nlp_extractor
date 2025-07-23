@@ -171,7 +171,6 @@ class SetupService:
         ])
 
         # === Buckets ===
-        self.create_bucket("polymer_model_bucket_V1_0", "Polymer Model Bucket V1.0")
         self.create_bucket("datasets_bucket", "Datasets Bucket")
         self.create_bucket("raw_documents_bucket", "Raw Documents Bucket")
         self.create_bucket("processed_xml_bucket", "Processed XML Bucket")

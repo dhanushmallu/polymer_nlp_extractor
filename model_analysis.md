@@ -550,3 +550,186 @@ Your diagnosis hits all the right pain-points—here’s how I see it, with a fe
 * A clean, modular pipeline in exactly the three service files you outlined.
 
 Once we’ve got Cells 5–7 bulletproof, Cells 8–10 will fall into place—and you’ll see your precision jump well above 90%. Let me know which of these you’d like to tackle first, or if you want to dive straight into rewriting one of the services.
+---
+
+---
+
+---
+Ah John—this is **exactly the kind of subtle, destructive issue** that can ruin even a beautifully trained ensemble.
+
+And you’re absolutely right to call this out as “more serious” because:
+
+✅ The model **has the correct intent**
+✅ But the **span boundaries are catastrophically wrong**
+✅ Making it “technically right” (the concepts are there) but “practically 50% wrong” (spans unusable for downstream).
+
+Let’s break it down carefully.
+
+---
+
+# 🚨 The Problem: Boundary Drift
+
+Your input sentence:
+
+> *The polyester was discovered to melt at a glass transition temperature of 44 °C.*
+
+The model predicts:
+
+| Label    | Predicted Span                           |
+| -------- | ---------------------------------------- |
+| Polymer  | `polyesterwasdiscovered`                 |
+| Property | `meltat`, `glasstransitiontemperatureof` |
+| Value    | `44`                                     |
+| Symbol   | `°C`                                     |
+| Material | `None`                                   |
+
+---
+
+### 🔥 Why This Is Technically Correct
+
+* `polyesterwasdiscovered` **contains** the polymer “polyester”
+* `glasstransitiontemperatureof` **contains** the property “glass transition temperature”
+* `44`, `°C` are **perfect**
+
+---
+
+### ❌ Why It’s Practically Wrong
+
+The predicted spans **include surrounding text** due to:
+
+* **Subtoken Merging Errors** (e.g., `polyester` + `was` → `polyesterwas`)
+* **Over-extended Windows**: Context words pulled into entity spans
+* **No Span Normalization Post-Inference**: “glass transition temperature of” should stop at “glass transition temperature”
+
+This is not just an aesthetic issue:
+
+* 🧨 It **breaks downstream parsing**
+* 🧨 It **destroys precision/recall** in evaluation against `test_057.csv`
+
+---
+
+# 📊 Root Causes in Your Pipeline
+
+| Stage                              | Issue                                                    |
+| ---------------------------------- | -------------------------------------------------------- |
+| **Token Packing (Cell 7)**         | Sentences cut across windows → offsets misaligned        |
+| **Fine-Tuning Alignment (Cell 8)** | Naïve `string.find()` alignment misses real token bounds |
+| **Ensemble Voting (Cell 9)**       | Overlapping predictions naïvely merged (runaway spans)   |
+| **Postprocessing (Cell 9)**        | No span normalization (keeps glued-together words)       |
+
+---
+
+# 🧠 Why the Model *Thinks* It’s Right
+
+This is classic with BERT-family tokenizers:
+✅ Subwords like `polyester##was`
+✅ Joined during postprocessing as `"polyesterwas"`
+✅ No logic exists to break at **non-domain stopwords** (“was”, “discovered”, “of”)
+
+---
+
+# 🎯 The Fix: Multi-Stage Boundary Refinement
+
+---
+
+## 🔥 Stage 1: Token Packing (Cell 7)
+
+✅ Preserve **exact sentence boundaries**
+✅ Track `(char_start, char_end)` per token
+✅ Prevent cross-window entity cutting
+
+---
+
+## 🔥 Stage 2: Alignment (Cell 8)
+
+✅ Replace naive `string.find()` with:
+
+* Hugging Face `offset_mapping`
+* `align_labels_with_tokens` utility
+  ✅ Ensures only **tokens overlapping with true entity spans** are labeled
+
+---
+
+## 🔥 Stage 3: Ensemble Voting (Cell 9)
+
+✅ Cluster overlapping spans
+✅ Within each cluster:
+
+* Keep **shortest span** covering majority votes
+* Use confidence weighting to resolve ties
+
+Example:
+
+| Raw Predictions          |
+| ------------------------ |
+| `polyesterwasdiscovered` |
+| `polyester`              |
+
+Result after reconciliation:
+✅ **Polymer: polyester**
+
+---
+
+## 🔥 Stage 4: Postprocessing (Cell 9)
+
+✅ Strip trailing/leading stopwords from spans:
+
+* `was`, `discovered`, `of`, `the`, etc.
+  ✅ Use domain lexicon (`POLYMER_NAMES`, `PROPERTY_NAMES`) for safe trimming:
+
+```python
+if span not in POLYMER_NAMES and span.startswith("polymer"):
+    span = span.replace("polymer", "").strip()
+```
+
+✅ Regex cleanup for runaway concatenations:
+
+```python
+re.sub(r"([a-z])([A-Z])", r"\1 \2", span)
+```
+
+Result:
+
+| Before                         | After                          |
+| ------------------------------ | ------------------------------ |
+| `glasstransitiontemperatureof` | `glass transition temperature` |
+
+---
+
+# ✅ End Result
+
+The model’s raw prediction:
+
+```
+polyesterwasdiscovered
+```
+
+Becomes:
+✅ **Polymer: polyester**
+
+And:
+
+```
+glasstransitiontemperatureof
+```
+
+Becomes:
+✅ **Property: glass transition temperature**
+
+---
+
+# 🚀 Next Step Recommendation
+
+We fix this in **two phases**:
+
+| Phase                        | Fix                                               |
+| ---------------------------- | ------------------------------------------------- |
+| **Phase 1 (Preprocessing)**  | Rewrite `token_packing.py` for offset integrity   |
+| **Phase 2 (Postprocessing)** | Add span normalization in `ensemble_inference.py` |
+
+---
+
+Do you want me to:
+✅ Start by rewriting **Cell 6 (tokenizer\_audit)** first (so subtokens are anchored and this error reduces naturally)?
+✅ Or go straight into **Cell 7 (token\_packing)** since sentence boundaries and offsets are critical?
+✅ Or bundle **Cell 6 + 7 + span normalization** as one comprehensive patch?

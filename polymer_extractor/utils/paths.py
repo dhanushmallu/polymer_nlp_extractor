@@ -12,18 +12,25 @@ PROJECT_ROOT: str = os.path.abspath(os.path.join(os.path.dirname(__file__), "../
 WORKSPACE_DIR: str = os.path.join(PROJECT_ROOT, "workspace")
 
 # === Core Workspace Directories ===
-RAW_INPUT_DIR: str = os.path.join(WORKSPACE_DIR, "raw_inputs")           # PDFs and supplementary files
-EXTRACTED_XML_DIR: str = os.path.join(WORKSPACE_DIR, "extracted_xml")    # GROBID TEI XML outputs
-SAMPLES_DIR: str = os.path.join(WORKSPACE_DIR, "samples")                # Processed text samples (spans, windows, tokens)
+RAW_INPUT_DIR: str = os.path.join(WORKSPACE_DIR, "raw_inputs")                # Uploaded PDFs ready for processing
+EXTRACTED_XML_DIR: str = os.path.join(WORKSPACE_DIR, "extracted_xml")         # PDFs converted to XML (not yet cleaned)
+PROCESSED_XML_DIR: str = os.path.join(WORKSPACE_DIR, "processed_xml")         # Cleaned TEI XML files ready for NLP
+SAMPLES_DIR: str = os.path.join(WORKSPACE_DIR, "samples")                     # Tokenization output (model_name/<file_name>_tei_sentences.txt, etc.)
+MODELS_DIR: str = os.path.join(WORKSPACE_DIR, "models")                       # All models
+TOKENIZERS_DIR: str = os.path.join(MODELS_DIR, "tokenizers")                  # Models extended by tokenization
+REPORTS_DIR: str = os.path.join(WORKSPACE_DIR, "reports")                     # Reports
+SYSTEM_LOGS_DIR: str = os.path.join(WORKSPACE_DIR, "system_logs")             # System logs (api.log, system.log, user.log)
+PUBLIC_GROBID_DIR: str = os.path.join(WORKSPACE_DIR, "public", "grobid")      # Grobid sample data
+GROBID_ROOT_DIR: str = os.path.join(WORKSPACE_DIR, "grobid-0.8.2")            # Grobid server root location
 
 DATASETS_DIR: str = os.path.join(WORKSPACE_DIR, "datasets")
-MODELS_DIR: str = os.path.join(WORKSPACE_DIR, "models")                  # Locally saved fine-tuned models
-LOGS_DIR: str = os.path.join(WORKSPACE_DIR, "system_logs")               # Audit and system logs
-EXPORTS_DIR: str = os.path.join(WORKSPACE_DIR, "exports")                # Human-readable results (txt, csv)
+TRAINING_DATA_DIR: str = os.path.join(DATASETS_DIR, "training")               # Processed training data
+TESTING_DATA_DIR: str = os.path.join(DATASETS_DIR, "testing")                 # Processed (realigned) testing data
 
-# Dataset subdirectories
-TRAINING_DATA_DIR: str = os.path.join(DATASETS_DIR, "training")
-TESTING_DATA_DIR: str = os.path.join(DATASETS_DIR, "testing")
+EXPORTS_DIR: str = os.path.join(WORKSPACE_DIR, "exports")                     # Human-readable results (txt, csv)
+
+# Backward compatibility
+LOGS_DIR = SYSTEM_LOGS_DIR  # System logs directory
 
 # Appwrite Configuration
 
@@ -95,3 +102,4 @@ def print_project_paths() -> None:
 
 # Automatically ensure directories exist at import
 ensure_directories()
+print("WORKSPACE_DIR is:", WORKSPACE_DIR, type(WORKSPACE_DIR))
