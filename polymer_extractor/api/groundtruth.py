@@ -64,7 +64,8 @@ class DeleteResponse(BaseModel):
 @router.post("/upload", response_model=UploadResponse)
 async def upload_ground_truth(
     background_tasks: BackgroundTasks,
-    file: UploadFile = File(..., description="Ground truth dataset (CSV or JSON)")
+    file: UploadFile = File(..., description="Ground truth dataset (CSV or JSON)"),
+    target_input: str = None
 ):
     """
     Upload and process a ground truth dataset.
@@ -76,6 +77,10 @@ async def upload_ground_truth(
     ----------
     file : UploadFile
         Uploaded ground truth file.
+    target_input : str, optional
+        Target input filename that this ground truth is associated with.
+        This allows you to specify which input file this ground truth data
+        is designed to test against (e.g., "057.pdf", "research_paper.xml").
 
     Returns
     -------
@@ -104,8 +109,8 @@ async def upload_ground_truth(
 
         logger.info(f"Saved uploaded file to temporary path: {temp_file_path}", source="groundtruth_api")
 
-        # Process file
-        result = gt_service.process_ground_truth_file(temp_file_path)
+        # Process file with optional target_input
+        result = gt_service.process_ground_truth_file(temp_file_path, target_input=target_input)
 
         # Clean up temp file in background
         background_tasks.add_task(temp_file_path.unlink)

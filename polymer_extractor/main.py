@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 
-from api import groundtruth, preprocessing, setup, grobid, finetune  # Import API modules
+from api import groundtruth, preprocessing, setup, grobid, finetune, ensemble_inference, \
+    evaluation  # Import API modules
 
 app = FastAPI(
     title="Polymer NLP Extractor API",
@@ -22,6 +23,12 @@ app.include_router(preprocessing.router, prefix="/api", tags=["Preprocessing"])
 
 # Include Fine-Tuning API router
 app.include_router(finetune.router, prefix="/api", tags=["Fine-Tuning"])
+
+# Include Ensemble Inference API router
+app.include_router(ensemble_inference.router, prefix="/api", tags=["Inference"])
+
+# Include Evaluation API router
+app.include_router(evaluation.router, prefix="/api", tags=["Evaluation"])
 
 @app.get("/")
 def root():

@@ -134,7 +134,7 @@ class SetupService:
 
         self.create_collection("extraction_metadata", "Extraction Metadata", [
             ("string", "file_id", 255, True),
-            ("string", "extracted_entities", 50000, False),
+            ("string", "extracted_entities", 500000, False),
             ("string", "model_version", 50, False),
             ("float", "confidence", None, False),
             ("datetime", "processed_on", None, False),
@@ -165,12 +165,15 @@ class SetupService:
             ("string", "appwrite_file_id", 255, False),
             ("string", "local_path", 1024, False),
             ("integer", "file_size", 2048, False),
+            ("string", "target_input", 255, False),
             ("string", "statistics", 2000, False),
             ("string", "data_quality", 2000, False),
             ("string", "columns", 2000, False),
         ])
 
         # === Buckets ===
+        self.create_bucket("model_results_bucket", "Models Bucket")
+        self.create_bucket("extracted_files_bucket", "Extracted Files Bucket")
         self.create_bucket("datasets_bucket", "Datasets Bucket")
         self.create_bucket("raw_documents_bucket", "Raw Documents Bucket")
         self.create_bucket("processed_xml_bucket", "Processed XML Bucket")

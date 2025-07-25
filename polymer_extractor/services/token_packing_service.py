@@ -13,19 +13,19 @@ Features:
 - No Appwrite storage (complies with new storage logic)
 """
 
-import os
 import json
+import os
 import re
-from typing import List, Dict, Any, Tuple
 from pathlib import Path
-from lxml import etree
+from typing import List, Dict, Any
 
+from lxml import etree
 from nltk.tokenize.punkt import PunktSentenceTokenizer, PunktParameters
 from transformers import AutoTokenizer, PreTrainedTokenizerFast
 
-from polymer_extractor.utils.paths import SAMPLES_DIR, WORKSPACE_DIR
-from polymer_extractor.utils.logging import Logger
 from polymer_extractor.model_config import ENSEMBLE_MODELS
+from polymer_extractor.utils.logging import Logger
+from polymer_extractor.utils.paths import SAMPLES_DIR, WORKSPACE_DIR
 
 logger = Logger()
 
@@ -49,7 +49,7 @@ class TokenPackingService:
         for model in self.models:
             model_name = model.name
             model_id = model.model_id
-            
+
             # Load appropriate tokenizer
             tokenizer_path = os.path.join(WORKSPACE_DIR, "models", "tokenizers", f"{model_name}_extended")
             if os.path.exists(tokenizer_path):
@@ -96,7 +96,6 @@ class TokenPackingService:
         raw = " ".join(tree.xpath("//text()"))
         return re.sub(r"\s+", " ", raw).strip()
 
-
     # TODO: During ensembly implement sentence rejoining logic as guided by README
     def _split_sentences(self, text: str) -> List[str]:
         """
@@ -117,9 +116,9 @@ class TokenPackingService:
         refined_sents = []
 
         scientific_split_patterns = [
-            r";",                      # semicolon
+            r";",  # semicolon
             r"\b(which|while|although|because|whereas)\b",  # clause joiners
-            r"\band\b",                # and/or in complex clauses
+            r"\band\b",  # and/or in complex clauses
             r"\bor\b"
         ]
 
@@ -160,7 +159,6 @@ class TokenPackingService:
         )
         return refined_sents
 
-
     def _compute_sentence_offsets(self, sentences: List[str], full_text: str) -> List[Dict[str, Any]]:
         """Compute char offsets of each sentence within the full text."""
         offsets = []
@@ -179,36 +177,76 @@ class TokenPackingService:
             cursor = end
         return offsets
 
-    def _pack_windows(self, sentences: List[str], sentence_offsets: List[Dict[str, Any]], tokenizer: PreTrainedTokenizerFast, model_name: str) -> List[Dict[str, Any]]:
-        """Pack full sentences into windows with preserved spans and metadata."""
+    def _pack_windows(
+            self,
+            sentences: List[str],
+            sentence_offsets: List[Dict[str, Any]],
+            tokenizer: PreTrainedTokenizerFast,
+            model_name: str
+    ) -> List[Dict[str, Any]]:
         windows = []
-        buffer, sentence_meta = [], []
+        buffer, buffer_meta = [], []
         current_len = 0
-        idx = 0
+
+        def add_window():
+            if buffer:
+                window = self._create_window(buffer, buffer_meta, len(windows), tokenizer, model_name)
+                windows.append(window)
 
         for i, sent in enumerate(sentences):
             tokenized = tokenizer(sent, return_attention_mask=False, return_token_type_ids=False)
             token_len = len(tokenized["input_ids"])
 
+            # If a single sentence exceeds max_tokens, split safely
+            if token_len > self.max_tokens:
+                tokens = tokenizer.tokenize(sent)
+                sub_sents, sub_buffer, sub_count = [], [], 0
+
+                for tok in tokens:
+                    sub_buffer.append(tok)
+                    sub_count += 1
+                    if sub_count >= self.max_tokens - 2:
+                        sub_sents.append(tokenizer.convert_tokens_to_string(sub_buffer))
+                        sub_buffer, sub_count = [], 0
+
+                if sub_buffer:
+                    sub_sents.append(tokenizer.convert_tokens_to_string(sub_buffer))
+
+                for sub_sent in sub_sents:
+                    sub_tokenized = tokenizer(sub_sent, return_attention_mask=False, return_token_type_ids=False)
+                    sub_len = len(sub_tokenized["input_ids"])
+
+                    if current_len + sub_len > self.max_tokens:
+                        add_window()
+                        buffer, buffer_meta = [], []
+                        current_len = 0
+
+                    buffer.append(sub_sent)
+                    buffer_meta.append({
+                        **sentence_offsets[i],
+                        "text": sub_sent,
+                        "original_text": sentence_offsets[i]["text"],
+                        "split_from": sentence_offsets[i]["sentence_id"]
+                    })
+                    current_len += sub_len
+
+                continue  # skip to next sentence
+
+            # Normal case
             if current_len + token_len > self.max_tokens:
-                if buffer:
-                    window = self._create_window(buffer, sentence_meta, len(windows), tokenizer, model_name)
-                    windows.append(window)
-                    buffer = buffer[-self.overlap_sentences:] if self.overlap_sentences else []
-                    sentence_meta = sentence_meta[-self.overlap_sentences:]
-                    current_len = sum(len(tokenizer(s, return_attention_mask=False)["input_ids"]) for s in buffer)
+                add_window()
+                buffer, buffer_meta = [], []
+                current_len = 0
 
             buffer.append(sent)
-            sentence_meta.append(sentence_offsets[i])
+            buffer_meta.append(sentence_offsets[i])
             current_len += token_len
 
-        if buffer:
-            window = self._create_window(buffer, sentence_meta, len(windows), tokenizer, model_name)
-            windows.append(window)
-
+        add_window()
         return windows
 
-    def _create_window(self, sentences: List[str], sentence_meta: List[Dict[str, Any]], window_index: int, tokenizer: PreTrainedTokenizerFast, model_name: str) -> Dict[str, Any]:
+    def _create_window(self, sentences: List[str], sentence_meta: List[Dict[str, Any]], window_index: int,
+                       tokenizer: PreTrainedTokenizerFast, model_name: str) -> Dict[str, Any]:
         joined_text = " ".join(sentences)
         encoded = tokenizer(
             joined_text,

@@ -9,7 +9,7 @@ Endpoints:
   - POST /api/preprocess/packtoken: Pack tokenized sentences into windows (standalone testing)
   - POST /api/preprocess: Full pipeline (TEI → Tokenizer Audit → Token Packing)
 
-Author: Dhanush Mallu <dhanush@example.com>
+
 """
 
 import os

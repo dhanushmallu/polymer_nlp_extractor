@@ -8,7 +8,7 @@ Fine-Tuning API Router for Polymer NLP Extractor.
 Endpoints:
   - POST /api/finetune: Trigger fine-tuning of one or all models
 
-Author: Dhanush Mallu <dhanush@example.com>
+
 """
 
 import os

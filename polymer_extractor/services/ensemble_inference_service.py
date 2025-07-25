@@ -1,177 +1,206 @@
-# polymer_extractor/services/ensemble_inference.py
-
-"""
-Ensemble Inference Service for Polymer NLP Extractor.
-
-Runs inference using all fine-tuned models in the ensemble and aggregates predictions
-through a robust voting strategy that balances label confidence, frequency, and alignment.
-
-Author: Dhanush Mallu <dhanush@example.com>
-"""
-
-import os
 import json
-from typing import Dict, List, Any
-from collections import defaultdict, Counter
+import re
+from collections import defaultdict
+from pathlib import Path
+from typing import Dict, Any, List
 
+import numpy as np
 import torch
+from torch.nn.functional import softmax
 from transformers import AutoTokenizer, AutoModelForTokenClassification
-from polymer_extractor.model_config import ENSEMBLE_MODELS, LABELS, ID2LABEL
-from polymer_extractor.utils.paths import WORKSPACE_DIR, EXPORTS_DIR
+
+from polymer_extractor.model_config import (
+    ENSEMBLE_MODELS,
+    LABELS,
+    LABEL2ID,
+    ID2LABEL,
+    get_entity_threshold
+)
+from polymer_extractor.services.constants.property_table import PROPERTY_TABLE
+from polymer_extractor.services.token_packing_service import TokenPackingService
+from polymer_extractor.storage.database_manager import DatabaseManager
 from polymer_extractor.utils.logging import Logger
+from polymer_extractor.utils.paths import WORKSPACE_DIR
 
 logger = Logger()
+db = DatabaseManager()
+
+STOPWORDS = {"of", "the", "at", "in", "to", "for", "on"}
+REMOVE_SUFFIXES = [" based", " derived", " containing"]
 
 
 class EnsembleInferenceService:
-    """
-    Runs ensemble-based inference across all configured models.
-    """
+    def __init__(self):
+        self.models_cfg = ENSEMBLE_MODELS
+        self.models_dir = Path(WORKSPACE_DIR) / "models" / "finetuned"
+        self.results_dir = Path(WORKSPACE_DIR) / "exports"
+        self.results_dir.mkdir(parents=True, exist_ok=True)
 
-    def __init__(self, model_names: List[str] = None):
-        self.models = []
-        self.tokenizers = []
-        self.model_names = model_names or [m.name for m in ENSEMBLE_MODELS]
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self._load_models()
+    def run_inference(self, tei_path: str) -> Dict[str, Any]:
+        logger.info(f"[EnsembleInference] Starting pipeline for {tei_path}",
+                    source="EnsembleInferenceService.run_inference")
 
-    def _load_models(self):
-        """Load all models and their tokenizers from local fine-tuned paths."""
-        for model_cfg in ENSEMBLE_MODELS:
-            if model_cfg.name not in self.model_names:
-                continue
+        base_name = Path(tei_path).stem
+        all_predictions = []
 
-            model_path = os.path.join(WORKSPACE_DIR, "models", f"{self._sanitize_name(model_cfg.name)}_finetuned")
-            tokenizer_path = os.path.join(WORKSPACE_DIR, "tokenizers", f"{self._sanitize_name(model_cfg.model_id)}_extended")
+        packing_service = TokenPackingService()
+        packing_result = packing_service.process(tei_path)
+        windows = None
 
-            tokenizer = AutoTokenizer.from_pretrained(tokenizer_path if os.path.exists(tokenizer_path) else model_cfg.model_id, use_fast=True)
-            model = AutoModelForTokenClassification.from_pretrained(model_path).to(self.device)
-            model.eval()
+        for model_cfg in self.models_cfg:
+            model_name = model_cfg.name
+            model_path = self.models_dir / model_name
 
-            self.models.append(model)
-            self.tokenizers.append(tokenizer)
-
-            logger.info(
-                f"Loaded model/tokenizer: {model_cfg.name}",
-                source="ensemble_inference._load_models",
-                category="inference",
-                event_type="model_loaded"
+            tokenizer_path = Path(WORKSPACE_DIR) / "models" / "tokenizers" / f"{model_name}_extended"
+            tokenizer = AutoTokenizer.from_pretrained(
+                tokenizer_path if tokenizer_path.exists() else model_cfg.model_id,
+                use_fast=True
             )
 
-    def run_inference(self, windows_path: str, output_name: str = "ensemble_predictions") -> Dict[str, Any]:
-        """
-        Perform inference across all tokenized windows using ensemble strategy.
+            model = AutoModelForTokenClassification.from_pretrained(
+                model_path,
+                num_labels=len(LABELS),
+                id2label=ID2LABEL,
+                label2id=LABEL2ID
+            ).eval()
 
-        Parameters
-        ----------
-        windows_path : str
-            Path to token windows JSON file from preprocessing.
-        output_name : str
-            Name to use when saving final results.
+            if torch.cuda.is_available():
+                model.cuda()
 
-        Returns
-        -------
-        dict
-            Structured predictions by sentence and entity type.
-        """
-        with open(windows_path, "r", encoding="utf-8") as f:
-            windows = json.load(f)
+            if windows is None:
+                windows_path = packing_result["models_processed"][model_name]["windows_file"]
+                with open(windows_path, "r", encoding="utf-8") as f:
+                    windows = json.load(f)
 
-        results = defaultdict(list)
+            preds = self._infer_model(model, tokenizer, windows, model_name)
+            all_predictions.append(preds)
 
-        for window in windows:
-            input_ids = torch.tensor([window["input_ids"]]).to(self.device)
-            attention_mask = torch.tensor([window["attention_mask"]]).to(self.device)
+            del model
+            torch.cuda.empty_cache()
 
-            all_logits = []
-            for model in self.models:
-                with torch.no_grad():
-                    logits = model(input_ids=input_ids, attention_mask=attention_mask).logits
-                    all_logits.append(logits)
+        merged_preds = self._merge_predictions(all_predictions)
+        final_results = self._ensemble_vote_and_postprocess(merged_preds)
 
-            # Stack and average logits
-            avg_logits = torch.stack(all_logits).mean(dim=0)
-            predictions = torch.argmax(avg_logits, dim=-1).squeeze().tolist()
-
-            tokens = self.tokenizers[0].convert_ids_to_tokens(window["input_ids"])
-            spans = self._extract_labeled_spans(tokens, predictions)
-
-            for span in spans:
-                label = span["label"]
-                results[label].append({
-                    "text": span["text"],
-                    "confidence": span["confidence"],
-                    "source_window": window["window_id"]
-                })
-
-        # Save results
-        os.makedirs(EXPORTS_DIR, exist_ok=True)
-        output_file = os.path.join(EXPORTS_DIR, f"{output_name}.json")
-        with open(output_file, "w", encoding="utf-8") as f:
-            json.dump(results, f, indent=2, ensure_ascii=False)
-
-        logger.info(
-            f"Ensemble predictions saved: {output_file}",
-            source="ensemble_inference.run_inference",
-            category="inference",
-            event_type="results_saved"
-        )
+        self._save_results(final_results, base_name)
 
         return {
             "success": True,
-            "model_count": len(self.models),
-            "output_file": output_file,
-            "extracted_labels": list(results.keys())
+            "tei_file": tei_path,
+            "models_used": [m.name for m in self.models_cfg],
+            "num_entities": sum(len(v) for v in final_results.values()),
+            "output_file": str(self.results_dir / f"{base_name}_ensemble_results.json")
         }
 
-    def _extract_labeled_spans(self, tokens: List[str], labels: List[int]) -> List[Dict[str, Any]]:
-        """Extract labeled spans from token sequence using BIO tags."""
-        spans = []
-        buffer = []
-        current_label = None
+    def _infer_model(self, model, tokenizer, windows, model_name: str) -> List[Dict[str, Any]]:
+        predictions = []
+        for win in windows:
+            inputs = {
+                "input_ids": torch.tensor([win["input_ids"]]),
+                "attention_mask": torch.tensor([win["attention_mask"]])
+            }
+            if torch.cuda.is_available():
+                inputs = {k: v.cuda() for k, v in inputs.items()}
 
-        for token, label_id in zip(tokens, labels):
-            label = ID2LABEL.get(label_id, "O")
-            if label == "O":
-                if buffer:
-                    spans.append({
-                        "text": self._clean_token(" ".join(buffer)),
-                        "label": current_label,
-                        "confidence": 1.0
-                    })
-                    buffer = []
-                    current_label = None
-                continue
+            with torch.no_grad():
+                outputs = model(**inputs)
+                probs = softmax(outputs.logits, dim=-1).cpu().numpy()[0]
+                pred_ids = np.argmax(probs, axis=-1)
 
-            prefix, tag = label.split("-", 1)
-            if prefix == "B" or (current_label and tag != current_label):
-                if buffer:
-                    spans.append({
-                        "text": self._clean_token(" ".join(buffer)),
-                        "label": current_label,
-                        "confidence": 1.0
-                    })
-                buffer = [token]
-                current_label = tag
-            else:
-                buffer.append(token)
+            for idx, label_id in enumerate(pred_ids):
+                if ID2LABEL[label_id] == "O":
+                    continue
 
-        if buffer:
-            spans.append({
-                "text": self._clean_token(" ".join(buffer)),
-                "label": current_label,
-                "confidence": 1.0
-            })
+                offset = win["offset_mapping"][idx]
+                if offset[0] == offset[1]:
+                    continue
 
-        return spans
+                predictions.append({
+                    "label": ID2LABEL[label_id],
+                    "text": win["text"][offset[0]:offset[1]],
+                    "char_start": offset[0],
+                    "char_end": offset[1],
+                    "confidence": float(probs[idx][label_id]),
+                    "model": model_name
+                })
+        return predictions
 
-    def _clean_token(self, text: str) -> str:
-        """Clean token strings (remove subtoken prefixes and spacing artifacts)."""
-        text = text.replace(" ##", "")
+    def _merge_predictions(self, all_predictions: List[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+        return [p for preds in all_predictions for p in preds]
+
+    def _ensemble_vote_and_postprocess(self, predictions: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+        clustered = defaultdict(list)
+        for pred in predictions:
+            entity_type = pred["label"].split("-")[-1]
+            clustered[entity_type].append(pred)
+
+        final_results = defaultdict(list)
+        for entity_type, preds in clustered.items():
+            preds.sort(key=lambda x: x["char_start"])
+
+            while preds:
+                cluster = [preds.pop(0)]
+                i = 0
+                while i < len(preds):
+                    if preds[i]["char_start"] <= cluster[-1]["char_end"]:
+                        cluster.append(preds.pop(i))
+                    else:
+                        i += 1
+
+                conf_scores = []
+                for c in cluster:
+                    model_cfg = next(m for m in ENSEMBLE_MODELS if m.name == c["model"])
+                    conf_scores.append(c["confidence"] * model_cfg.get_dynamic_weight(entity_type))
+
+                avg_conf = np.mean(conf_scores)
+                threshold = get_entity_threshold(entity_type, [], "simple_majority", conf_scores)
+
+                if avg_conf >= threshold:
+                    best_span = max(cluster, key=lambda x: x["confidence"])
+                    cleaned_text = self._clean_span(best_span["text"])
+                    if cleaned_text:
+                        final_results[entity_type].append({
+                            "text": cleaned_text,
+                            "char_start": best_span["char_start"],
+                            "char_end": best_span["char_end"],
+                            "confidence": round(avg_conf, 4),
+                            "models_voted": [c["model"] for c in cluster]
+                        })
+
+        return dict(final_results)
+
+    def _clean_span(self, text: str) -> str:
+        """Fix token joins, remove suffixes, and trim stopwords."""
         text = text.replace("##", "")
-        text = text.replace(" .", ".")
-        return text.strip()
+        text = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", text)
+        text = re.sub(r"\s+", " ", text).strip()
 
-    @staticmethod
-    def _sanitize_name(name: str) -> str:
-        return name.replace("/", "_").replace(" ", "_")
+        # Remove unwanted suffixes if not canonical
+        for suffix in REMOVE_SUFFIXES:
+            if text.lower().endswith(suffix):
+                base = text[: -len(suffix)].strip()
+                if base.lower() not in [p["property"].lower() for p in PROPERTY_TABLE]:
+                    text = base
+
+        # Remove trailing stopwords
+        parts = text.split()
+        while parts and parts[-1].lower() in STOPWORDS:
+            parts.pop()
+        return " ".join(parts)
+
+    def _save_results(self, results: Dict[str, Any], base_name: str):
+        local_path = self.results_dir / f"{base_name}_ensemble_results.json"
+        with open(local_path, "w", encoding="utf-8") as f:
+            json.dump(results, f, indent=2, ensure_ascii=False)
+
+        json_str = json.dumps(results, ensure_ascii=False)
+        truncated = json_str[:500000]
+
+        try:
+            db.create_document("extraction_metadata", {
+                "file_name": base_name,
+                "extracted_entities": truncated,
+                "full_json_path": str(local_path)
+            })
+        except Exception as e:
+            logger.error(f"Appwrite save failed: {e}",
+                         source="EnsembleInferenceService._save_results", error=e)

@@ -78,7 +78,8 @@ class GroundTruthService:
 
     def process_ground_truth_file(self, file_path: Union[str, Path],
                                   filename_stem: str = None,
-                                  original_filename: str = None) -> Dict[str, Any]:
+                                  original_filename: str = None,
+                                  target_input: str = None) -> Dict[str, Any]:
         """
         Execute the complete ground truth processing workflow.
 
@@ -99,6 +100,10 @@ class GroundTruthService:
             Custom filename stem for output files.
         original_filename : str, optional
             Original filename for metadata tracking.
+        target_input : str, optional
+            Target input filename that this ground truth is associated with.
+            This allows you to specify which input file this ground truth data
+            is designed to test against (e.g., "057.pdf", "research_paper.xml").
 
         Returns
         -------
@@ -146,8 +151,8 @@ class GroundTruthService:
             standardized_df = self._create_standardized_dataframe(cleaned_data)
             result['standardized_dataframe'] = len(standardized_df)
 
-            # Step 5: Generate metadata
-            metadata = self._generate_metadata(standardized_df, original_filename, file_type)
+            # Step 5: Generate metadata with target_input
+            metadata = self._generate_metadata(standardized_df, original_filename, file_type, target_input)
             result['metadata'] = metadata
             # Add dataset name to metadata
             dataset_name = filename_stem or Path(original_filename).stem
@@ -760,7 +765,7 @@ class GroundTruthService:
     # === METADATA GENERATION ===
 
     def _generate_metadata(self, df: pd.DataFrame, original_filename: str,
-                           file_type: str) -> Dict[str, Any]:
+                           file_type: str, target_input: str = None) -> Dict[str, Any]:
         """
         Generate comprehensive metadata for the processed ground truth data.
 
@@ -772,6 +777,8 @@ class GroundTruthService:
             Original filename.
         file_type : str
             File type ('csv' or 'json').
+        target_input : str, optional
+            Target input filename that this ground truth is associated with.
 
         Returns
         -------
@@ -806,7 +813,8 @@ class GroundTruthService:
             'created_on': datetime.now().isoformat() + "Z",
             'source': original_filename,
             'size': stats['total_records'],
-            'notes': ''
+            'notes': '',
+            'target_input': target_input or ''  # Include target_input in metadata
         }
 
         logger.debug("Generated comprehensive metadata", source="GroundTruthService")
