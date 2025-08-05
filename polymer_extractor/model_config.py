@@ -223,13 +223,13 @@ class DynamicThresholds:
     """Dynamic threshold calculator for adaptive confidence management."""
 
     BASE_THRESHOLDS = {
-        "POLYMER": 0.82,
-        "MATERIAL": 0.80,
-        "PROPERTY": 0.75,
-        "VALUE": 0.72,
-        "UNIT": 0.72,
-        "SYMBOL": 0.70,
-        "GLOBAL": 0.75
+        "POLYMER": 0.75,  # Reduced for better recall
+        "MATERIAL": 0.72, # Reduced for better recall
+        "PROPERTY": 0.68, # Reduced for better recall
+        "VALUE": 0.65,    # Reduced for better recall
+        "UNIT": 0.65,     # Reduced for better recall
+        "SYMBOL": 0.62,   # Reduced for better recall
+        "GLOBAL": 0.68    # Reduced for better recall
     }
 
     CONTEXT_MODIFIERS = {
@@ -238,7 +238,8 @@ class DynamicThresholds:
         "technical_domain": -0.02,    # Lower for technical content
         "experimental_data": -0.03,   # Lower for experimental contexts
         "review_article": 0.02,       # Raise for review contexts
-        "synthesis_procedure": -0.04   # Lower for synthesis descriptions
+        "synthesis_procedure": -0.04, # Lower for synthesis descriptions
+        "semantic_relationships": -0.06  # Lower when semantic relationships detected
     }
 
     ENSEMBLE_AGREEMENT_MODIFIERS = {
@@ -290,7 +291,9 @@ VALIDATION_CONFIDENCE_ADJUSTMENTS = {
     "UNIT_VALIDATION_PASS": 0.06,
     "CONTEXT_COHERENCE": 0.05,
     "CROSS_REFERENCE_VALIDATION": 0.07,
-    "DOMAIN_EXPERTISE_MATCH": 0.04
+    "DOMAIN_EXPERTISE_MATCH": 0.04,
+    "POLYMER_PATTERN_MATCH": 0.08,
+    "UNIT_STANDARDIZED": 0.05
 }
 
 # Advanced ensemble strategies configuration
@@ -394,26 +397,26 @@ PERFORMANCE_TRACKING = {
     "MIN_SAMPLES_FOR_UPDATE": 20  # Minimum samples before updating weights
 }
 
-# Entity relationship patterns for semantic awareness
+# Entity relationship patterns for semantic awareness - CRITICAL IMPLEMENTATION
 ENTITY_RELATIONSHIP_PATTERNS = {
     "VALUE_UNIT_PAIRS": {
         "distance_threshold": 5,  # tokens
-        "confidence_boost": 0.1,
+        "confidence_boost": 0.12,  # Increased boost for VALUE-UNIT pairs
         "required_confidence": 0.6
     },
     "PROPERTY_VALUE_RELATIONSHIPS": {
         "distance_threshold": 10,
-        "confidence_boost": 0.08,
+        "confidence_boost": 0.10,  # Increased boost for PROPERTY-VALUE
         "required_confidence": 0.65
     },
     "POLYMER_PROPERTY_ASSOCIATIONS": {
         "distance_threshold": 20,
-        "confidence_boost": 0.06,
+        "confidence_boost": 0.08,  # Increased boost for POLYMER-PROPERTY
         "required_confidence": 0.7
     },
     "MATERIAL_CONTEXT_COHERENCE": {
         "distance_threshold": 50,
-        "confidence_boost": 0.04,
+        "confidence_boost": 0.06,  # Increased boost for material context
         "required_confidence": 0.75
     }
 }

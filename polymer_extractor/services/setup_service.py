@@ -10,9 +10,7 @@ import os
 from appwrite.exception import AppwriteException
 
 from polymer_extractor.storage.appwrite_client import get_database_service, get_storage_service, get_database_id
-from polymer_extractor.utils.logging import Logger
-
-logger = Logger()
+from polymer_extractor.utils.logging import logger
 
 
 class SetupService:
@@ -40,50 +38,62 @@ class SetupService:
         """
         try:
             self.db.get_collection(self.database_id, collection_id)
-            logger.info(f"Collection '{collection_id}' already exists.",
-                        source="setup_service", category="system", event_type="collection_check")
+            logger.debug(f"Collection '{collection_id}' already exists",
+                        source="setup_service", event_type="collection_check")
         except AppwriteException as e:
             if e.code == 404:
-                logger.info(f"Creating collection '{collection_id}'...",
-                            source="setup_service", category="system", event_type="collection_create")
+                logger.info(f"Creating collection '{collection_id}'",
+                            source="setup_service", event_type="collection_create",
+                            context={"collection_name": name, "attributes_count": len(attributes)})
+                
                 self.db.create_collection(
                     database_id=self.database_id,
                     collection_id=collection_id,
                     name=name,
                     document_security=False
                 )
+                
                 for attr in attributes:
                     attr_type, attr_name, size, required = attr
                     create_method = getattr(self.db, f"create_{attr_type}_attribute")
 
-                    if attr_type == "enum":
-                        create_method(
-                            database_id=self.database_id,
-                            collection_id=collection_id,
-                            key=attr_name,
-                            elements=size,
-                            required=required
-                        )
-                    elif attr_type == "string":
-                        create_method(
-                            database_id=self.database_id,
-                            collection_id=collection_id,
-                            key=attr_name,
-                            size=size,
-                            required=required
-                        )
-                    else:
-                        create_method(
-                            database_id=self.database_id,
-                            collection_id=collection_id,
-                            key=attr_name,
-                            required=required
-                        )
-                logger.info(f"Collection '{collection_id}' created with attributes.",
-                            source="setup_service", category="system", event_type="collection_created")
+                    try:
+                        if attr_type == "enum":
+                            create_method(
+                                database_id=self.database_id,
+                                collection_id=collection_id,
+                                key=attr_name,
+                                elements=size,
+                                required=required
+                            )
+                        elif attr_type == "string":
+                            create_method(
+                                database_id=self.database_id,
+                                collection_id=collection_id,
+                                key=attr_name,
+                                size=size,
+                                required=required
+                            )
+                        else:
+                            create_method(
+                                database_id=self.database_id,
+                                collection_id=collection_id,
+                                key=attr_name,
+                                required=required
+                            )
+                    except AppwriteException as attr_error:
+                        logger.warning(f"Failed to create attribute '{attr_name}' for collection '{collection_id}'",
+                                     source="setup_service", event_type="attribute_create_error",
+                                     context={"attribute": attr_name, "type": attr_type},
+                                     error=attr_error)
+                
+                logger.info(f"Collection '{collection_id}' created successfully",
+                            source="setup_service", event_type="collection_created",
+                            context={"collection_name": name})
             else:
                 logger.error(f"Failed to check/create collection '{collection_id}'",
-                             source="setup_service", error=e, event_type="collection_error")
+                             source="setup_service", event_type="collection_error",
+                             context={"collection_id": collection_id}, error=e)
                 raise
 
     def create_bucket(self, bucket_id: str, name: str):
@@ -99,16 +109,18 @@ class SetupService:
         """
         try:
             self.storage.get_bucket(bucket_id)
-            logger.info(f"[Setup] Bucket '{bucket_id}' already exists.", source="setup_service", category="system",
-                        event_type="bucket_check")
+            logger.debug(f"Bucket '{bucket_id}' already exists",
+                        source="setup_service", event_type="bucket_check")
         except AppwriteException as e:
             if e.code == 404:
                 self.storage.create_bucket(bucket_id, name, file_security=False)
-                logger.info(f"[Setup] Bucket '{bucket_id}' created.", source="setup_service", category="system",
-                            event_type="bucket_create")
+                logger.info(f"Bucket '{bucket_id}' created successfully",
+                            source="setup_service", event_type="bucket_created",
+                            context={"bucket_name": name})
             else:
-                logger.error(f"[Setup] Error checking/creating bucket '{bucket_id}': {e}", source="setup_service",
-                             error=e, category="system", event_type="bucket_error")
+                logger.error(f"Error checking/creating bucket '{bucket_id}'",
+                             source="setup_service", event_type="bucket_error",
+                             context={"bucket_id": bucket_id}, error=e)
                 raise
 
     def initialize_all_resources(self):

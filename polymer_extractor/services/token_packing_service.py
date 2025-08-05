@@ -5,12 +5,11 @@ Token Packing Service for Polymer NLP Extractor.
 
 Features:
 ---------
-- Sentence-aware token packing (no mid-span cuts)
-- Span-safe windowing using tokenizer offset_mapping
-- Uses extended tokenizer (if available) for each model
-- Preserves sentence boundaries and overlap
-- Saves outputs to local SAMPLES_DIR for auditability
-- No Appwrite storage (complies with new storage logic)
+- Sentence-aware, span-safe windowing using tokenizer offset_mapping
+- Avoids storing token ids (no `input_ids`, `attention_mask`)
+- Compatible with ensemble model config (model_config.py)
+- Saves plain sentence text + traceable window metadata
+- Fully model-tokenizer aware; vocab overflows eliminated
 """
 
 import json
@@ -31,8 +30,10 @@ logger = Logger()
 
 
 class TokenPackingService:
-    def __init__(self, max_tokens: int = 512, overlap_sentences: int = 1):
+    def __init__(self, max_tokens: int = 440, overlap_sentences: int = 1):
         self.max_tokens = max_tokens
+        self.buffer_limit = 45
+        self.actual_limit = max_tokens + self.buffer_limit  # 485 token budget
         self.overlap_sentences = overlap_sentences
         self.models = ENSEMBLE_MODELS
 
@@ -40,7 +41,6 @@ class TokenPackingService:
         base_name = Path(tei_path).stem
         logger.info(f"Starting token packing for {base_name}", source="TokenPackingService.process")
 
-        # Extract clean plain text from XML
         raw_text = self._extract_text(tei_path)
         sentences = self._split_sentences(raw_text)
         sentence_offsets = self._compute_sentence_offsets(sentences, raw_text)
@@ -50,14 +50,9 @@ class TokenPackingService:
             model_name = model.name
             model_id = model.model_id
 
-            # Load appropriate tokenizer
+            # Load tokenizer (use extended version if available)
             tokenizer_path = os.path.join(WORKSPACE_DIR, "models", "tokenizers", f"{model_name}_extended")
-            if os.path.exists(tokenizer_path):
-                logger.info(f"Loading extended tokenizer from {tokenizer_path}", source="TokenPackingService")
-                tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, use_fast=True)
-            else:
-                logger.info(f"Loading base tokenizer for {model_name}", source="TokenPackingService")
-                tokenizer = AutoTokenizer.from_pretrained(model_id, use_fast=True)
+            tokenizer = AutoTokenizer.from_pretrained(tokenizer_path if os.path.exists(tokenizer_path) else model_id, use_fast=True)
 
             output_dir = os.path.join(SAMPLES_DIR, f"{model_name}_outputs")
             os.makedirs(output_dir, exist_ok=True)
@@ -66,7 +61,6 @@ class TokenPackingService:
             with open(sentence_map_path, "w", encoding="utf-8") as f:
                 json.dump(sentence_offsets, f, indent=2, ensure_ascii=False)
 
-            # Create token windows
             windows = self._pack_windows(sentences, sentence_offsets, tokenizer, model_name)
 
             windows_path = os.path.join(output_dir, f"{base_name}_token_windows.json")
@@ -81,7 +75,7 @@ class TokenPackingService:
                 "windows_file": windows_path,
                 "sentence_map_file": sentence_map_path,
                 "num_windows": len(windows),
-                "num_sentences": len(sentences),
+                "num_sentences": len(sentences)
             }
 
         return {
@@ -96,18 +90,7 @@ class TokenPackingService:
         raw = " ".join(tree.xpath("//text()"))
         return re.sub(r"\s+", " ", raw).strip()
 
-    # TODO: During ensembly implement sentence rejoining logic as guided by README
     def _split_sentences(self, text: str) -> List[str]:
-        """
-        Split text into sentences with domain-aware refinement.
-
-        - Uses PunktSentenceTokenizer for initial split.
-        - Further splits any sentence exceeding max token threshold using:
-            • Semicolons (;)
-            • Scientific clause joiners (e.g. 'which', 'while', 'although')
-            • Commas and 'and'/'or' when repeated
-        - Ensures no resulting sentence alone exceeds `max_tokens`.
-        """
         punkt_params = PunktParameters()
         punkt_params.abbrev_types = {"e.g", "i.e", "Fig", "Dr", "vs"}
         splitter = PunktSentenceTokenizer(punkt_params)
@@ -115,52 +98,35 @@ class TokenPackingService:
         initial_sents = splitter.tokenize(text)
         refined_sents = []
 
-        scientific_split_patterns = [
-            r";",  # semicolon
-            r"\b(which|while|although|because|whereas)\b",  # clause joiners
-            r"\band\b",  # and/or in complex clauses
-            r"\bor\b"
+        split_patterns = [
+            r";",
+            r"\b(which|while|although|because|whereas)\b",
+            r"\band\b", r"\bor\b"
         ]
 
-        compound_split_re = re.compile("|".join(scientific_split_patterns), re.IGNORECASE)
-
         for sent in initial_sents:
-            # If sentence is already fine, keep it
-            tokenized = AutoTokenizer.from_pretrained("bert-base-uncased", use_fast=True)(sent)
+            tokenized = AutoTokenizer.from_pretrained("bert-base-uncased", use_fast=True)(sent, add_special_tokens=False)
             if len(tokenized["input_ids"]) <= self.max_tokens:
                 refined_sents.append(sent)
                 continue
 
-            # Split with domain-aware clause boundaries
-            parts = re.split(compound_split_re, sent)
-            parts = [p.strip(",;:. ") for p in parts if len(p.strip()) > 10]
-
-            # Recombine conservatively if some fragments too small
-            buffer = ""
+            parts = re.split("|".join(split_patterns), sent)
             for part in parts:
-                if not buffer:
-                    buffer = part
+                part = part.strip()
+                if not part or len(part) < 20:
                     continue
-                joined = buffer + " " + part
-                joined_len = len(AutoTokenizer.from_pretrained("bert-base-uncased", use_fast=True)(joined)["input_ids"])
-                if joined_len <= self.max_tokens:
-                    buffer = joined
+                tokenized_part = AutoTokenizer.from_pretrained("bert-base-uncased", use_fast=True)(part, add_special_tokens=False)
+                if len(tokenized_part["input_ids"]) <= self.max_tokens:
+                    refined_sents.append(part)
                 else:
-                    refined_sents.append(buffer.strip())
-                    buffer = part
-            if buffer:
-                refined_sents.append(buffer.strip())
+                    sub_parts = re.split(r',\s+(?:and|or)\s+', part)
+                    refined_sents.extend([s.strip() for s in sub_parts if len(s.strip()) >= 20])
 
-        logger.info(
-            f"Split {len(initial_sents)} initial sentences into {len(refined_sents)} domain-aware sentences.",
-            source="TokenPackingService._split_sentences",
-            category="preprocessing",
-            event_type="sentence_split"
-        )
+        logger.info(f"Split {len(initial_sents)} initial sentences into {len(refined_sents)} refined sentences.",
+                    source="TokenPackingService._split_sentences")
         return refined_sents
 
     def _compute_sentence_offsets(self, sentences: List[str], full_text: str) -> List[Dict[str, Any]]:
-        """Compute char offsets of each sentence within the full text."""
         offsets = []
         cursor = 0
         for idx, sent in enumerate(sentences):
@@ -177,63 +143,50 @@ class TokenPackingService:
             cursor = end
         return offsets
 
-    def _pack_windows(
-            self,
-            sentences: List[str],
-            sentence_offsets: List[Dict[str, Any]],
-            tokenizer: PreTrainedTokenizerFast,
-            model_name: str
-    ) -> List[Dict[str, Any]]:
+    def _pack_windows(self, sentences: List[str], sentence_offsets: List[Dict[str, Any]],
+                      tokenizer: PreTrainedTokenizerFast, model_name: str) -> List[Dict[str, Any]]:
+
         windows = []
         buffer, buffer_meta = [], []
         current_len = 0
 
         def add_window():
             if buffer:
-                window = self._create_window(buffer, buffer_meta, len(windows), tokenizer, model_name)
-                windows.append(window)
+                joined_text = " ".join(buffer)
+                encoded = tokenizer(joined_text, return_offsets_mapping=True, truncation=True,
+                                    max_length=512, padding="max_length")
+                token_count = len([tid for tid in encoded["input_ids"] if tid != tokenizer.pad_token_id])
+
+                if token_count > 512:
+                    logger.critical(
+                        f"[TokenPacking] Packed token count exceeds limit: {token_count}",
+                        source="TokenPackingService._pack_windows",
+                        context={"model": model_name, "text_sample": joined_text[:100]}
+                    )
+                    return  # Skip invalid window
+
+                windows.append({
+                    "window_id": f"{model_name}_win_{len(windows):04d}",
+                    "text": joined_text,
+                    "sentence_meta": buffer_meta,
+                    "char_start": buffer_meta[0]["char_start"],
+                    "char_end": buffer_meta[-1]["char_end"],
+                    "model": model_name,
+                    "sentence_count": len(buffer),
+                    "tokenizer_trace": {
+                        "token_count": token_count,
+                        "within_limit": token_count <= 512
+                    }
+                })
 
         for i, sent in enumerate(sentences):
             tokenized = tokenizer(sent, return_attention_mask=False, return_token_type_ids=False)
             token_len = len(tokenized["input_ids"])
 
-            # If a single sentence exceeds max_tokens, split safely
             if token_len > self.max_tokens:
-                tokens = tokenizer.tokenize(sent)
-                sub_sents, sub_buffer, sub_count = [], [], 0
+                logger.warning(f"Long sentence ({token_len} tokens): {sent[:80]}", source="TokenPackingService._pack_windows")
 
-                for tok in tokens:
-                    sub_buffer.append(tok)
-                    sub_count += 1
-                    if sub_count >= self.max_tokens - 2:
-                        sub_sents.append(tokenizer.convert_tokens_to_string(sub_buffer))
-                        sub_buffer, sub_count = [], 0
-
-                if sub_buffer:
-                    sub_sents.append(tokenizer.convert_tokens_to_string(sub_buffer))
-
-                for sub_sent in sub_sents:
-                    sub_tokenized = tokenizer(sub_sent, return_attention_mask=False, return_token_type_ids=False)
-                    sub_len = len(sub_tokenized["input_ids"])
-
-                    if current_len + sub_len > self.max_tokens:
-                        add_window()
-                        buffer, buffer_meta = [], []
-                        current_len = 0
-
-                    buffer.append(sub_sent)
-                    buffer_meta.append({
-                        **sentence_offsets[i],
-                        "text": sub_sent,
-                        "original_text": sentence_offsets[i]["text"],
-                        "split_from": sentence_offsets[i]["sentence_id"]
-                    })
-                    current_len += sub_len
-
-                continue  # skip to next sentence
-
-            # Normal case
-            if current_len + token_len > self.max_tokens:
+            if current_len + token_len > self.actual_limit:
                 add_window()
                 buffer, buffer_meta = [], []
                 current_len = 0
@@ -244,23 +197,4 @@ class TokenPackingService:
 
         add_window()
         return windows
-
-    def _create_window(self, sentences: List[str], sentence_meta: List[Dict[str, Any]], window_index: int,
-                       tokenizer: PreTrainedTokenizerFast, model_name: str) -> Dict[str, Any]:
-        joined_text = " ".join(sentences)
-        encoded = tokenizer(
-            joined_text,
-            return_offsets_mapping=True,
-            max_length=self.max_tokens,
-            truncation=True,
-            padding="max_length"
-        )
-
-        return {
-            "window_id": f"{model_name}_win_{window_index:04d}",
-            "text": joined_text,
-            "sentence_meta": sentence_meta,
-            "input_ids": encoded["input_ids"],
-            "attention_mask": encoded["attention_mask"],
-            "offset_mapping": encoded["offset_mapping"]
-        }
+ 

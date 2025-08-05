@@ -79,3 +79,11 @@
 
 * Add CLI debug option: `--show-voting-matrix` to print how each model voted per span.
 * Save rejected span clusters to `ensemble_rejected.json` for auditing.
+
+
+## How to run FastAPI local server
+To run the FastAPI server locally, use this command:
+
+```bash
+uvicorn main:app --reload
+```

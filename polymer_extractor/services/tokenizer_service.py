@@ -53,6 +53,8 @@ class TokenizerService:
 
     def audit_and_extend_all(self, force: bool = False) -> Dict[str, Any]:
         logger.info("Starting tokenizer audit and extension", source="TokenizerService.audit_and_extend_all")
+        logger.warning("Extended tokenizers should only be used with retrained models", 
+                       source="TokenizerService.audit_and_extend_all")
 
         # Pull dataset terms and merge with constants
         all_terms = self._harvest_terms_from_datasets()
@@ -125,6 +127,21 @@ class TokenizerService:
         split_terms, _ = self._audit_terms(tokenizer, terms)
         new_tokens = tokenizer.add_tokens(split_terms)
         special_tokens = self._add_special_tokens(tokenizer)
+
+        # Add warning about model compatibility
+        if new_tokens > 0 or special_tokens > 0:
+            logger.warning(
+                f"Extended tokenizer for {model_name} adds {new_tokens + special_tokens} tokens. "
+                f"This requires model retraining to work properly during inference.",
+                source="TokenizerService._audit_and_extend_single",
+                context={
+                    "model_name": model_name,
+                    "base_vocab_size": base_vocab_size,
+                    "new_tokens": new_tokens,
+                    "special_tokens": special_tokens,
+                    "final_vocab_size": len(tokenizer)
+                }
+            )
 
         os.makedirs(tokenizer_output_dir, exist_ok=True)
         tokenizer.save_pretrained(tokenizer_output_dir)

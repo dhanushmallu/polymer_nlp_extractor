@@ -102,4 +102,3 @@ def print_project_paths() -> None:
 
 # Automatically ensure directories exist at import
 ensure_directories()
-print("WORKSPACE_DIR is:", WORKSPACE_DIR, type(WORKSPACE_DIR))
