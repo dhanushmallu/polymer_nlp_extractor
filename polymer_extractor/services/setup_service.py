@@ -154,6 +154,23 @@ class SetupService:
             ("string", "remarks", 1024, False),
         ])
 
+        # Enhanced extraction results collection for comprehensive processing metadata
+        self.create_collection("extraction_results", "Enhanced Extraction Results", [
+            ("string", "file_name", 255, True),
+            ("string", "extracted_entities", 500000, False),
+            ("string", "results_file_path", 1024, False),
+            ("string", "structured_file_path", 1024, False),
+            ("string", "metadata_file_path", 1024, False),
+            ("integer", "total_entities", None, False),
+            ("string", "processing_strategy", 2048, False),
+            ("string", "ensemble_strategy", 100, False),
+            ("float", "average_confidence", None, False),
+            ("datetime", "processed_on", None, False),
+            ("string", "model_version", 50, False),
+            ("enum", "status", ["pending", "processing", "success", "failed"], False),
+            ("string", "processing_notes", 2048, False),
+        ])
+
         self.create_collection("models_metadata", "Models Metadata", [
             ("string", "model_name", 255, True),
             ("string", "version", 50, True),

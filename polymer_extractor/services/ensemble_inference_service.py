@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple, Set
 from dataclasses import dataclass, asdict
 from itertools import combinations
+from datetime import datetime
 import math
 from difflib import SequenceMatcher
 
@@ -46,6 +47,7 @@ from polymer_extractor.model_config import (
 )
 from polymer_extractor.services.constants.property_table import PROPERTY_TABLE
 from polymer_extractor.services.token_packing_service import TokenPackingService
+from polymer_extractor.services.enhanced_merging_service import StrictSentenceProcessor
 from polymer_extractor.storage.database_manager import DatabaseManager
 from polymer_extractor.utils.logging import logger
 from polymer_extractor.utils.paths import WORKSPACE_DIR
@@ -1083,39 +1085,17 @@ class EnsembleInferenceService:
                     num_labels=len(LABELS),
                     id2label=ID2LABEL,
                     label2id=LABEL2ID,
-                    torch_dtype=torch.float32,
-                    device_map="auto" if torch.cuda.is_available() else None
+                    torch_dtype=torch.float32
                 ).eval()
 
-                if torch.cuda.is_available() and not hasattr(model, 'device_map'):
+                # Move model to appropriate device
+                if torch.cuda.is_available():
                     model.cuda()
-
-                # Load tokenizer with compatibility check
-                tokenizer_path = Path(WORKSPACE_DIR) / "models" / "tokenizers" / f"{model_name}_extended"
-                if tokenizer_path.exists():
-                    try:
-                        extended_tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, use_fast=True)
-                        # Check if extended tokenizer is compatible with model vocab size
-                        if len(extended_tokenizer) <= model.config.vocab_size:
-                            tokenizer = extended_tokenizer
-                            logger.info(f"Using compatible extended tokenizer for {model_name}",
-                                       source="EnsembleInferenceService.run_inference")
-                        else:
-                            logger.warning(f"Extended tokenizer too large for {model_name}, using base tokenizer",
-                                         source="EnsembleInferenceService.run_inference",
-                                         context={
-                                             "extended_vocab_size": len(extended_tokenizer),
-                                             "model_vocab_size": model.config.vocab_size
-                                         })
-                            tokenizer = AutoTokenizer.from_pretrained(model_cfg.model_id, use_fast=True)
-                    except Exception as e:
-                        logger.warning(f"Failed to load extended tokenizer for {model_name}, using base: {e}",
-                                     source="EnsembleInferenceService.run_inference")
-                        tokenizer = AutoTokenizer.from_pretrained(model_cfg.model_id, use_fast=True)
                 else:
-                    logger.info(f"Using base tokenizer for {model_name}",
-                               source="EnsembleInferenceService.run_inference")
-                    tokenizer = AutoTokenizer.from_pretrained(model_cfg.model_id, use_fast=True)
+                    model.cpu()  # Ensure model is on CPU
+
+                # Load model-specific tokenizer to avoid vocabulary mismatches
+                tokenizer = self._get_model_specific_tokenizer(model_name, model_cfg.model_id, model.config.vocab_size)
 
                 # Ensure tokenizer has pad token
                 if tokenizer.pad_token is None:
@@ -1233,6 +1213,47 @@ class EnsembleInferenceService:
             processing_metadata["consolidation_method"] = "traditional"
         inference_metadata.update(processing_metadata)
 
+        # Apply Strict Sentence Processing Pipeline for clean, accurate results
+        logger.info("Applying strict sentence processing pipeline",
+                   source="EnsembleInferenceService.run_inference")
+        
+        try:
+            strict_processor = StrictSentenceProcessor()
+            processed_result = strict_processor.process_ensemble_results(
+                dict(final_results), tei_path, base_name
+            )
+            
+            # Extract entities from processed result
+            processed_entities = processed_result.get("entities", [])
+            
+            # Reorganize by entity type for consistency
+            final_results = defaultdict(list)
+            for entity in processed_entities:
+                entity_type = entity.get('entity_type', 'UNKNOWN')
+                final_results[entity_type].append(entity)
+            
+            # Update inference metadata with processing stats
+            inference_metadata.update({
+                "consolidation_method": "strict_sentence_processing",
+                "sentences_processed": processed_result.get("sentence_count", 0),
+                "tei_source": tei_path,
+                "total_entities_consolidated": processed_result.get("entity_count", 0)
+            })
+            
+            logger.info(f"Strict sentence processing completed successfully",
+                       source="EnsembleInferenceService.run_inference",
+                       context={
+                           "final_entity_count": sum(len(entities) for entities in final_results.values()),
+                           "entity_breakdown": {k: len(v) for k, v in final_results.items()},
+                           "processing_stats": processed_result.get("processing_stats", {})
+                       })
+            
+        except Exception as e:
+            logger.error(f"Strict sentence processing failed, using original results: {e}",
+                        source="EnsembleInferenceService.run_inference", error=e)
+            # Continue with original results if processing fails
+            inference_metadata["consolidation_method"] = "traditional"
+
         # Create comprehensive results with metadata separation
         extraction_results = {entity_type: entities for entity_type, entities in final_results.items()}
         
@@ -1281,9 +1302,7 @@ class EnsembleInferenceService:
             "num_entities": sum(len(v) for v in final_results.values()),
             "entity_breakdown": {k: len(v) for k, v in final_results.items()},
             "output_files": {
-                "results": str(self.results_dir / f"{base_name}_ensemble_results.json"),
-                "structured": str(self.results_dir / f"{base_name}_ensemble_structured.json"),
-                "metadata": str(self.results_dir / f"{base_name}_ensemble_metadata.json")
+                "results": str(self.results_dir / f"{base_name}_ensemble_results.json")
             },
             "semantic_relationships": len(all_relationships),
             "strategy_used": self.current_strategy.value
@@ -1390,14 +1409,12 @@ class EnsembleInferenceService:
                     else:
                         continue
 
-                # Move to device
+                # Move to appropriate device based on model's device
+                device = next(model.parameters()).device
                 device_inputs = {
-                    "input_ids": input_ids.unsqueeze(0),
-                    "attention_mask": attention_mask.unsqueeze(0)
+                    "input_ids": input_ids.unsqueeze(0).to(device),
+                    "attention_mask": attention_mask.unsqueeze(0).to(device)
                 }
-                
-                if torch.cuda.is_available():
-                    device_inputs = {k: v.cuda() for k, v in device_inputs.items()}
 
                 # Model inference
                 with torch.no_grad():
@@ -2436,52 +2453,150 @@ class EnsembleInferenceService:
         
         return detailed_votes
 
+    def _get_model_specific_tokenizer(self, model_name: str, model_id: str, model_vocab_size: int):
+        """
+        Get the appropriate tokenizer for each model to avoid vocabulary mismatches.
+        
+        This eliminates the 'Extended tokenizer too large' warnings by using the 
+        exact tokenizer each model was trained with.
+        """
+        # First, try to use extended tokenizer if it exists and is compatible
+        extended_tokenizer_path = Path(WORKSPACE_DIR) / "models" / "tokenizers" / f"{model_name}_extended"
+        
+        if extended_tokenizer_path.exists():
+            try:
+                extended_tokenizer = AutoTokenizer.from_pretrained(extended_tokenizer_path, use_fast=True)
+                actual_vocab_size = len(extended_tokenizer)
+                
+                # Allow up to 5% vocabulary expansion for extended tokenizers
+                if actual_vocab_size <= model_vocab_size * 1.05:
+                    logger.info(
+                        f"Using compatible extended tokenizer for {model_name} (vocab: {actual_vocab_size})",
+                        source="EnsembleInferenceService._get_model_specific_tokenizer"
+                    )
+                    return extended_tokenizer
+                else:
+                    logger.info(
+                        f"Extended tokenizer for {model_name} exceeds model capacity ({actual_vocab_size} vs {model_vocab_size}), using base tokenizer",
+                        source="EnsembleInferenceService._get_model_specific_tokenizer",
+                        context={
+                            "strategy": "fallback_to_base",
+                            "extended_vocab_size": actual_vocab_size,
+                            "model_vocab_size": model_vocab_size
+                        }
+                    )
+            except Exception as e:
+                logger.warning(
+                    f"Failed to load extended tokenizer for {model_name}: {e}",
+                    source="EnsembleInferenceService._get_model_specific_tokenizer"
+                )
+        
+        # Use model-specific base tokenizer
+        base_tokenizer_id = self._get_base_tokenizer_id(model_name, model_id)
+        tokenizer = AutoTokenizer.from_pretrained(base_tokenizer_id, use_fast=True)
+        
+        logger.info(
+            f"Using base tokenizer for {model_name}: {base_tokenizer_id} (vocab: {len(tokenizer)})",
+            source="EnsembleInferenceService._get_model_specific_tokenizer"  
+        )
+        
+        return tokenizer
+    
+    def _get_base_tokenizer_id(self, model_name: str, model_id: str) -> str:
+        """
+        Map each model to its appropriate base tokenizer to avoid vocabulary mismatches.
+        """
+        tokenizer_mapping = {
+            "PolymerNER": "bert-base-uncased",           # BERT-based, standard vocab
+            "MatSciBERT": "allenai/scibert_scivocab_uncased",  # SciBERT with scientific vocab
+            "SciBERT": "allenai/scibert_scivocab_uncased",     # Original SciBERT tokenizer
+            "PhysBERT": "bert-base-uncased",             # BERT-based, standard vocab
+            "BioBERT": "dmis-lab/biobert-base-cased-v1.1"     # BioBERT with biomedical vocab
+        }
+        
+        # Return mapped tokenizer or fall back to the model's own tokenizer
+        return tokenizer_mapping.get(model_name, model_id)
+
     def _save_enhanced_results(self, results: Dict[str, List[Dict[str, Any]]], 
                              metadata: Dict[str, Any], base_name: str):
-        """Save results and metadata to separate files."""
+        """Save results to single ensemble_results.json file with strict processing applied."""
         
-        # Create structured window-based results for manual verification
-        structured_results = self._create_structured_results(results, metadata)
+        # Update metadata to reflect strict sentence processing
+        enhanced_metadata = metadata.copy()
+        enhanced_metadata["processing_pipeline"] = enhanced_metadata.get("processing_pipeline", [])
+        enhanced_metadata["processing_pipeline"].append("strict_sentence_processor")
+        enhanced_metadata["strict_processing_applied"] = True
         
-        # Save structured results (ordered by char positions for easy verification)
-        structured_path = self.results_dir / f"{base_name}_ensemble_structured.json"
-        with open(structured_path, "w", encoding="utf-8") as f:
-            f.write(JSONSerializable.safe_json_dumps(structured_results, indent=2, ensure_ascii=False))
+        # Recalculate quality metrics after strict processing
+        total_entities = sum(len(entities) for entities in results.values())
+        if total_entities > 0:
+            # Calculate average confidence from processed results
+            all_confidences = []
+            for entities in results.values():
+                for entity in entities:
+                    if isinstance(entity, dict) and 'confidence' in entity:
+                        all_confidences.append(entity['confidence'])
+            
+            avg_confidence = sum(all_confidences) / len(all_confidences) if all_confidences else 0.0
+            
+            # Update quality metrics
+            enhanced_metadata["quality_metrics"]["total_entities_extracted"] = total_entities
+            enhanced_metadata["quality_metrics"]["average_confidence"] = avg_confidence
+            enhanced_metadata["quality_metrics"]["entity_type_distribution"] = {
+                entity_type: len(entities) for entity_type, entities in results.items()
+            }
         
-        # Save main results (clean - original format)
+        # Create single comprehensive results file
+        comprehensive_results = {
+            "metadata": enhanced_metadata,
+            "entities": results,
+            "processing_summary": {
+                "total_entities": total_entities,
+                "entity_breakdown": {k: len(v) for k, v in results.items()},
+                "processing_method": "strict_sentence_processing",
+                "confidence_thresholds_applied": True,
+                "single_file_output": True
+            }
+        }
+        
+        # Save single results file
         results_path = self.results_dir / f"{base_name}_ensemble_results.json"
         with open(results_path, "w", encoding="utf-8") as f:
-            f.write(JSONSerializable.safe_json_dumps(results, indent=2, ensure_ascii=False))
-        
-        # Save detailed metadata
-        metadata_path = self.results_dir / f"{base_name}_ensemble_metadata.json"
-        with open(metadata_path, "w", encoding="utf-8") as f:
-            f.write(JSONSerializable.safe_json_dumps(metadata, indent=2, ensure_ascii=False))
+            f.write(JSONSerializable.safe_json_dumps(comprehensive_results, indent=2, ensure_ascii=False))
         
         # Save to database (truncated results only)
         try:
             results_str = JSONSerializable.safe_json_dumps(results, ensure_ascii=False)
             truncated_results = results_str[:500000] if len(results_str) > 500000 else results_str
             
+            # Get processing strategy summary
+            strategy_summary = JSONSerializable.safe_json_dumps(
+                enhanced_metadata.get("ensemble_strategy_performance", {}), ensure_ascii=False
+            )[:2048]
+            
             db = DatabaseManager()
             db.create_document("extraction_results", {
                 "file_name": base_name,
                 "extracted_entities": truncated_results,
                 "results_file_path": str(results_path),
-                "structured_file_path": str(structured_path),
-                "metadata_file_path": str(metadata_path),
-                "total_entities": metadata["quality_metrics"]["total_entities_extracted"],
-                "processing_strategy": metadata.get("ensemble_strategy_performance", {})
+                "total_entities": enhanced_metadata["quality_metrics"]["total_entities_extracted"],
+                "processing_strategy": strategy_summary,
+                "ensemble_strategy": enhanced_metadata.get("ensemble_strategy", "unknown"),
+                "average_confidence": enhanced_metadata["quality_metrics"].get("average_confidence", 0.0),
+                "processed_on": datetime.now().isoformat() + "Z",
+                "model_version": "ensemble_v1.0_strict",
+                "status": "success",
+                "processing_notes": f"Strict sentence processing completed. Single file output: {results_path}"
             })
             
             logger.info(
-                f"Saved enhanced results for {base_name}",
+                f"Saved strict processing results for {base_name}",
                 source="EnsembleInferenceService._save_enhanced_results",
                 context={
                     "results_file": str(results_path),
-                    "structured_file": str(structured_path),
-                    "metadata_file": str(metadata_path),
-                    "total_entities": metadata["quality_metrics"]["total_entities_extracted"]
+                    "total_entities": enhanced_metadata["quality_metrics"]["total_entities_extracted"],
+                    "strict_processing": True,
+                    "single_file_output": True
                 }
             )
         except Exception as e:

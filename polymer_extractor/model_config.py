@@ -223,13 +223,13 @@ class DynamicThresholds:
     """Dynamic threshold calculator for adaptive confidence management."""
 
     BASE_THRESHOLDS = {
-        "POLYMER": 0.75,  # Reduced for better recall
-        "MATERIAL": 0.72, # Reduced for better recall
-        "PROPERTY": 0.68, # Reduced for better recall
-        "VALUE": 0.65,    # Reduced for better recall
-        "UNIT": 0.65,     # Reduced for better recall
-        "SYMBOL": 0.62,   # Reduced for better recall
-        "GLOBAL": 0.68    # Reduced for better recall
+        "POLYMER": 0.85,  # Strict threshold for polymers
+        "MATERIAL": 0.85, # Strict threshold for materials
+        "PROPERTY": 0.80, # High threshold for properties
+        "VALUE": 0.78,    # High threshold for values
+        "UNIT": 0.78,     # High threshold for units
+        "SYMBOL": 0.75,   # High threshold for symbols
+        "GLOBAL": 0.80    # High global threshold
     }
 
     CONTEXT_MODIFIERS = {
@@ -363,13 +363,13 @@ PROCESSING_CONFIG = {
 POST_PROCESSING_CONFIG = {
     # start with confidence thresholds
     "CONFIDENCE_THRESHOLDS": {
-        "POLYMER": 0.82,
-        "MATERIAL": 0.80,
-        "PROPERTY": 0.75,
-        "VALUE": 0.72,
-        "UNIT": 0.72,
-        "SYMBOL": 0.70,
-        "GLOBAL": 0.75
+        "POLYMER": 0.87,    # Very strict for polymers
+        "MATERIAL": 0.87,   # Very strict for materials
+        "PROPERTY": 0.82,   # Strict for properties
+        "VALUE": 0.80,      # Strict for values
+        "UNIT": 0.80,       # Strict for units
+        "SYMBOL": 0.78,     # Strict for symbols
+        "GLOBAL": 0.82      # High global threshold
     },
     "ENTITY_MERGE_THRESHOLD": 0.85,  # Similarity threshold for merging entities
     "ENTITY_SPLIT_THRESHOLD": 0.7,   # Threshold for splitting entities

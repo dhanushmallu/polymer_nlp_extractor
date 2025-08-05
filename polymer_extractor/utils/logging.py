@@ -59,10 +59,12 @@ class LogEntry:
         # Clean stack trace - remove visual artifacts and format file paths
         clean_message = self.message
         if self.stack_trace:
-            # Clean stack trace artifacts
-            clean_trace = self.stack_trace.replace("^^^^", "").replace("", "/")
-            # Add backticks to file paths
+            # Clean stack trace artifacts - remove common control characters
             import re
+            clean_trace = self.stack_trace.replace("^^^^", "")
+            # Remove any invisible control characters that might cause formatting issues
+            clean_trace = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]', '', clean_trace)
+            # Add backticks to file paths
             clean_trace = re.sub(r'(/[\w/.-]+\.py)', r'`\1`', clean_trace)
             clean_message += f"\nStack trace:\n{clean_trace}"
         
