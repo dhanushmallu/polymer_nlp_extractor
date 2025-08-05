@@ -25,10 +25,10 @@ from polymer_extractor.utils.paths import LOGS_DIR, APPWRITE_LOGS_COLLECTION
 @dataclass
 class LogEntry:
     """Structured log entry for better type safety and serialization."""
-    timestamp: str
-    level: str
-    message: str
-    source: str
+    timestamp: str = ""
+    level: str = "INFO"
+    message: str = ""
+    source: str = ""
     event_type: str = "general"
     user_action: bool = False
     context: Optional[Dict[str, Any]] = None
@@ -36,7 +36,7 @@ class LogEntry:
     file_name: Optional[str] = None
     line_number: Optional[int] = None
     category: str = "system"
-    synced_to_appwrite: bool = True
+    synced_to_appwrite: bool = False  # Default to False to avoid sync errors
     
     def to_dict(self, include_nulls: bool = True) -> Dict[str, Any]:
         """Convert to dictionary, optionally excluding null values."""
@@ -46,18 +46,27 @@ class LogEntry:
         return data
     
     def to_human_readable(self) -> str:
-        """Convert to human-readable log line."""
-        timestamp_short = self.timestamp.split('T')[1][:8]  # HH:MM:SS
+        """Convert to human-readable log line with clean formatting."""
+        timestamp_short = self.timestamp.split('T')[1][:8] if 'T' in self.timestamp else self.timestamp[:8]
         context_str = ""
         if self.context and any(self.context.values()):
-            # Only show non-empty context values
-            non_empty_context = {k: v for k, v in self.context.items() if v}
-            if non_empty_context:
-                context_str = f" | {json.dumps(non_empty_context, separators=(',', ':'))}"
+            context_items = [f"{k}={v}" for k, v in self.context.items() if v]
+            if context_items:
+                context_str = f" | {', '.join(context_items)}"
         
-        stack_info = f" | {self.file_name}:{self.line_number}" if self.file_name else ""
+        stack_info = f" | `{self.file_name}`:{self.line_number}" if self.file_name else ""
         
-        return f"[{timestamp_short}] {self.level:<7} {self.source:<20} | {self.message}{context_str}{stack_info}"
+        # Clean stack trace - remove visual artifacts and format file paths
+        clean_message = self.message
+        if self.stack_trace:
+            # Clean stack trace artifacts
+            clean_trace = self.stack_trace.replace("^^^^", "").replace("", "/")
+            # Add backticks to file paths
+            import re
+            clean_trace = re.sub(r'(/[\w/.-]+\.py)', r'`\1`', clean_trace)
+            clean_message += f"\nStack trace:\n{clean_trace}"
+        
+        return f"[{timestamp_short}] {self.level:<7} {self.source:<20} | {clean_message}{context_str}{stack_info}"
 
 
 class SmartTruncator:
@@ -70,15 +79,56 @@ class SmartTruncator:
     
     @staticmethod
     def truncate_message(message: str) -> str:
-        """Intelligently truncate message while preserving key information."""
+        """Truncate message to fit cloud storage limits."""
         if len(message) <= SmartTruncator.MESSAGE_LIMIT:
             return message
+        return message[:SmartTruncator.MESSAGE_LIMIT - 3] + "..."
+    
+    @staticmethod
+    def truncate_stack_trace(stack_trace: str) -> str:
+        """Truncate stack trace intelligently."""
+        if not stack_trace or len(stack_trace) <= SmartTruncator.STACK_TRACE_LIMIT:
+            return stack_trace or ""
         
-        # Try to preserve the beginning and end
-        prefix_len = SmartTruncator.MESSAGE_LIMIT // 2 - 10
-        suffix_len = SmartTruncator.MESSAGE_LIMIT // 2 - 10
+        lines = stack_trace.split('\n')
+        if len(lines) <= 10:
+            return stack_trace[:SmartTruncator.STACK_TRACE_LIMIT - 3] + "..."
         
-        return f"{message[:prefix_len]}... [TRUNCATED] ...{message[-suffix_len:]}"
+        # Keep first 5 and last 5 lines for context
+        truncated = lines[:5] + ['  ... (truncated) ...'] + lines[-5:]
+        result = '\n'.join(truncated)
+        
+        if len(result) > SmartTruncator.STACK_TRACE_LIMIT:
+            return result[:SmartTruncator.STACK_TRACE_LIMIT - 3] + "..."
+        return result
+    
+    @staticmethod
+    def truncate_context(context: Dict[str, Any]) -> Dict[str, Any]:
+        """Truncate context dictionary intelligently."""
+        if not context:
+            return {}
+        
+        result = {}
+        current_size = 0
+        
+        for key, value in context.items():
+            # Convert value to string for size calculation
+            str_value = str(value)
+            item_size = len(key) + len(str_value) + 10  # Extra for JSON formatting
+            
+            if current_size + item_size > SmartTruncator.CONTEXT_LIMIT:
+                result["_truncated"] = True
+                break
+            
+            # Truncate individual values if too long
+            if len(str_value) > 200:
+                result[key] = str_value[:197] + "..."
+            else:
+                result[key] = value
+            
+            current_size += item_size
+        
+        return result
     
     @staticmethod
     def truncate_stack_trace(stack_trace: str) -> str:
@@ -156,6 +206,24 @@ class LogDeduplicator:
             (should_log, suppression_message)
         """
         with self.lock:
+            message_key = self._get_message_key(entry)
+            now = datetime.now()
+            
+            # Clean old entries outside the window
+            window_start = now - timedelta(minutes=self.window_minutes)
+            timestamps = self.message_counts[message_key]
+            
+            while timestamps and timestamps[0] < window_start:
+                timestamps.popleft()
+            
+            # Check if we should suppress this message
+            if len(timestamps) >= self.max_duplicates:
+                suppression_msg = f"Suppressed duplicate message (seen {len(timestamps)} times in {self.window_minutes}min)"
+                return False, suppression_msg
+            
+            # Add this timestamp
+            timestamps.append(now)
+            return True, None
             now = datetime.now()
             key = self._get_message_key(entry)
             
@@ -194,17 +262,14 @@ class Logger:
         """Initialize the enhanced logger."""
         os.makedirs(LOGS_DIR, exist_ok=True)
         
-        # Setup log files
+        # Setup log files - single structured format per category
         self.local_log_files = {
-            category: {
-                'json': os.path.join(LOGS_DIR, f"{category}.json.log"),
-                'human': os.path.join(LOGS_DIR, f"{category}.readable.log")
-            }
+            category: os.path.join(LOGS_DIR, f"{category}.log")
             for category in self.LOG_CATEGORIES
         }
         
-        # Create main system log (human readable)
-        self.main_log_file = os.path.join(LOGS_DIR, "system.readable.log")
+        # Create main system log
+        self.main_log_file = os.path.join(LOGS_DIR, "system.log")
         
         # Initialize components
         self.deduplicator = LogDeduplicator()
@@ -219,84 +284,51 @@ class Logger:
     def _setup_appwrite(self):
         """Setup Appwrite client and collection."""
         try:
+            from polymer_extractor.utils.paths import APPWRITE_PROJECT_ID, APPWRITE_API_KEY, APPWRITE_ENDPOINT
+            
             self.client = Client()
-            self.client.set_endpoint(os.getenv("APPWRITE_ENDPOINT"))
-            self.client.set_project(os.getenv("APPWRITE_PROJECT_ID"))
-            self.client.set_key(os.getenv("APPWRITE_API_KEY"))
-            
+            self.client.set_endpoint(APPWRITE_ENDPOINT).set_project(APPWRITE_PROJECT_ID).set_key(APPWRITE_API_KEY)
             self.databases = Databases(self.client)
-            self.database_id = os.getenv("APPWRITE_DATABASE_ID")
-            self.collection_id = APPWRITE_LOGS_COLLECTION
-            
-            self._ensure_appwrite_collection()
+            self.database_id = APPWRITE_LOGS_COLLECTION['database_id']
+            self.collection_id = APPWRITE_LOGS_COLLECTION['collection_id']
             self.appwrite_enabled = True
+            
         except Exception as e:
-            print(f"[Logger] Appwrite setup failed, logging locally only: {e}")
             self.appwrite_enabled = False
+            print(f"[APPWRITE_SETUP_ERROR] {e}")
     
     def _ensure_appwrite_collection(self):
         """Ensure Appwrite logs collection exists with proper schema."""
         try:
-            self.databases.get_collection(self.database_id, self.collection_id)
+            # This would normally check/create collection schema
+            # Simplified for now to avoid collection setup complexity
+            pass
         except AppwriteException as e:
-            if e.code == 404:
-                # Create collection with enhanced schema
-                self.databases.create_collection(
-                    database_id=self.database_id,
-                    collection_id=self.collection_id,
-                    name="Enhanced System Logs",
-                    document_security=False
-                )
-                
-                # Define attributes with larger sizes
-                attributes = [
-                    ("log_id", "string", 36, True),  # Added log_id attribute
-                    ("timestamp", "string", 32, True),
-                    ("level", "string", 16, True),
-                    ("message", "string", 1024, True),  # Increased
-                    ("source", "string", 64, True),
-                    ("event_type", "string", 32, False),
-                    ("user_action", "boolean", None, False),
-                    ("context", "string", 2048, False),  # Increased
-                    ("stack_trace", "string", 3072, False),  # Increased
-                    ("file_name", "string", 128, False),
-                    ("line_number", "integer", None, False),
-                    ("category", "string", 16, False),
-                    ("synced_to_appwrite", "boolean", None, False),  # Added with default False
-                    ("local_log_file", "string", 256, False)  # Added for schema compatibility
-                ]
-                
-                for attr_name, attr_type, size, required in attributes:
-                    if attr_type == "string":
-                        self.databases.create_string_attribute(
-                            database_id=self.database_id,
-                            collection_id=self.collection_id,
-                            key=attr_name,
-                            size=size,
-                            required=required
-                        )
-                    elif attr_type == "integer":
-                        self.databases.create_integer_attribute(
-                            database_id=self.database_id,
-                            collection_id=self.collection_id,
-                            key=attr_name,
-                            required=required
-                        )
-                    elif attr_type == "boolean":
-                        self.databases.create_boolean_attribute(
-                            database_id=self.database_id,
-                            collection_id=self.collection_id,
-                            key=attr_name,
-                            required=required
-                        )
+            print(f"[APPWRITE_COLLECTION_ERROR] {e}")
+    
+    def _make_json_safe(self, obj):
+        """Convert non-JSON serializable objects to safe types."""
+        if isinstance(obj, (np.integer, np.int64, np.int32)):
+            return int(obj)
+        elif isinstance(obj, (np.float64, np.float32, np.floating)):
+            return float(obj)
+        elif isinstance(obj, (np.ndarray, torch.Tensor)):
+            return f"<{type(obj).__name__} shape={getattr(obj, 'shape', 'unknown')}>"
+        elif isinstance(obj, dict):
+            return {k: self._make_json_safe(v) for k, v in obj.items()}
+        elif isinstance(obj, (list, tuple)):
+            return [self._make_json_safe(item) for item in obj]
+        else:
+            return str(obj)
     
     def _ensure_log_files_exist(self):
         """Create all necessary log files."""
-        all_files = [self.main_log_file]
-        for category_files in self.local_log_files.values():
-            all_files.extend(category_files.values())
+        all_files = [self.main_log_file] + list(self.local_log_files.values())
         
         for file_path in all_files:
+            if not os.path.exists(file_path):
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write("")  # Create empty file
             if not os.path.exists(file_path):
                 with open(file_path, "w", encoding="utf-8") as f:
                     f.write("")
@@ -317,20 +349,10 @@ class Logger:
             return obj
     
     def _write_local_logs(self, entry: LogEntry):
-        """Write to local log files in both JSON and human-readable formats."""
-        # JSON log for machine processing - ensure JSON serializable
-        json_file = self.local_log_files[entry.category]['json']
-        with open(json_file, "a", encoding="utf-8") as f:
-            try:
-                f.write(json.dumps(entry.to_dict(include_nulls=False), ensure_ascii=False) + "\n")
-            except TypeError:
-                # Handle non-JSON serializable types
-                safe_dict = self._make_json_safe(entry.to_dict(include_nulls=False))
-                f.write(json.dumps(safe_dict, ensure_ascii=False) + "\n")
-        
-        # Human-readable log
-        human_file = self.local_log_files[entry.category]['human']
-        with open(human_file, "a", encoding="utf-8") as f:
+        """Write to local log files in structured human-readable format."""
+        # Single structured log file per category
+        log_file = self.local_log_files[entry.category]
+        with open(log_file, "a", encoding="utf-8") as f:
             f.write(entry.to_human_readable() + "\n")
         
         # Also write to main system log if it's a system or error log
@@ -339,51 +361,42 @@ class Logger:
                 f.write(entry.to_human_readable() + "\n")
     
     def _sync_to_appwrite(self, entry: LogEntry) -> bool:
-        """Sync log entry to Appwrite with smart truncation."""
+        """Sync log entry to Appwrite with smart truncation and all required attributes."""
         if not self.appwrite_enabled:
             return False
         
         try:
-            # Create cloud-optimized version
-            cloud_entry = LogEntry(
-                timestamp=entry.timestamp,
-                level=entry.level,
-                message=self.truncator.truncate_message(entry.message),
-                source=entry.source,
-                event_type=entry.event_type,
-                user_action=entry.user_action,
-                context=self.truncator.truncate_context(entry.context) if entry.context else None,
-                stack_trace=self.truncator.truncate_stack_trace(entry.stack_trace) if entry.stack_trace else None,
-                file_name=entry.file_name,
-                line_number=entry.line_number,
-                category=entry.category
-            )
-            
-            # Convert to dict and prepare for Appwrite
-            cloud_data = cloud_entry.to_dict(include_nulls=False)
-            
-            # Add required fields for Appwrite schema compatibility
-            cloud_data['log_id'] = ID.unique()  # Add missing log_id
-            cloud_data['local_log_file'] = self.local_log_files[entry.category]['json']
-            
-            # Convert context to JSON string for Appwrite - make safe first
-            if cloud_data.get('context'):
-                safe_context = self._make_json_safe(cloud_data['context'])
-                cloud_data['context'] = json.dumps(safe_context, ensure_ascii=False)
+            # Create document with all required attributes and defaults
+            log_doc = {
+                "timestamp": entry.timestamp or datetime.now().isoformat() + "Z",
+                "level": entry.level or "INFO",
+                "message": self.truncator.truncate_message(entry.message or ""),
+                "source": entry.source or "unknown",
+                "event_type": entry.event_type or "general",
+                "user_action": bool(entry.user_action),
+                "context": json.dumps(self.truncator.truncate_context(entry.context or {})),
+                "stack_trace": self.truncator.truncate_stack_trace(entry.stack_trace or ""),
+                "file_name": entry.file_name or "",
+                "line_number": entry.line_number or 0,
+                "category": entry.category or "system",
+                "synced_to_appwrite": True,
+                "log_id": ID.unique()
+            }
             
             self.databases.create_document(
                 database_id=self.database_id,
                 collection_id=self.collection_id,
                 document_id=ID.unique(),
-                data=cloud_data
+                data=log_doc
             )
             return True
             
         except AppwriteException as e:
-            # Log sync failure to local file only (avoid recursion)
-            error_msg = f"Failed to sync log to Appwrite: {str(e)[:200]}"
-            with open(self.main_log_file, "a", encoding="utf-8") as f:
-                f.write(f"[{datetime.now().strftime('%H:%M:%S')}] WARNING sync_error | {error_msg}\n")
+            # Don't create recursive logs - just print
+            print(f"[APPWRITE_SYNC_ERROR] {str(e)[:200]}")
+            return False
+        except Exception as e:
+            print(f"[SYNC_ERROR] {str(e)[:200]}")
             return False
     
     def log(self, level: str, message: str, source: str,

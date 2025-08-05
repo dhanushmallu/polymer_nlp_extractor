@@ -57,13 +57,13 @@ class TokenPackingService:
             output_dir = os.path.join(SAMPLES_DIR, f"{model_name}_outputs")
             os.makedirs(output_dir, exist_ok=True)
 
-            sentence_map_path = os.path.join(output_dir, f"{base_name}_sentence_offsets.json")
+            sentence_map_path = os.path.join(output_dir, f"{base_name}.tei_sentence_offsets.json")
             with open(sentence_map_path, "w", encoding="utf-8") as f:
                 json.dump(sentence_offsets, f, indent=2, ensure_ascii=False)
 
             windows = self._pack_windows(sentences, sentence_offsets, tokenizer, model_name)
 
-            windows_path = os.path.join(output_dir, f"{base_name}_token_windows.json")
+            windows_path = os.path.join(output_dir, f"{base_name}.tei_token_windows.json")
             with open(windows_path, "w", encoding="utf-8") as f:
                 json.dump(windows, f, indent=2, ensure_ascii=False)
 
