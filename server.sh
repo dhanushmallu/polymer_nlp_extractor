@@ -114,25 +114,33 @@ Enhanced Polymer NLP Extractor Server Manager
 Usage: ./server.sh [OPTIONS]
 
 Options:
-    --services-only     Start only Docker services (PostgreSQL, Neo4j, GROBID)
-    --app-only         Start only the Python application (assumes services are running)
-    --stop-services    Stop all Docker services
-    --restart-services Restart all Docker services
-    --status          Show status of services and application
-    --help            Show this help message
+    --services-only       Start only Docker services (PostgreSQL, Neo4j, GROBID)
+    --app-only           Start only the Python application (assumes services are running)
+    --stop-services      Stop all Docker services (enhanced with ServerManager)
+    --restart-services   Restart all Docker services (enhanced with ServerManager)
+    --status            Show comprehensive status of services and application
+    --cleanup-ports     Clean up ports used by services
+    --emergency-cleanup Emergency cleanup and force-stop all services
+    --help              Show this help message
 
 Examples:
-    ./server.sh                    # Start services + application
-    ./server.sh --services-only    # Start only Docker services
-    ./server.sh --app-only         # Start only Python app
-    ./server.sh --status           # Check service status
+    ./server.sh                     # Start services + application
+    ./server.sh --services-only     # Start only Docker services
+    ./server.sh --app-only          # Start only Python app
+    ./server.sh --status            # Check comprehensive service status
+    ./server.sh --stop-services     # Enhanced service stop with cleanup
+    ./server.sh --emergency-cleanup # Force cleanup all services
 
 Environment Variables:
-    API_HOST          API server host (default: 127.0.0.1)
-    API_PORT          API server port (default: 8000)
-    POSTGRES_PORT     PostgreSQL port (default: 5432)
-    NEO4J_PORT        Neo4j port (default: 7687)
-    GROBID_PORT       GROBID port (default: 8070)
+    API_HOST                API server host (default: 127.0.0.1)
+    API_PORT                API server port (default: 8000)
+    POSTGRES_PORT           PostgreSQL port (default: 5432)
+    NEO4J_PORT              Neo4j port (default: 7687)
+    GROBID_PORT             GROBID port (default: 8070)
+    SERVER_STARTUP_TIMEOUT  Service startup timeout (default: 30s)
+    SERVER_SHUTDOWN_TIMEOUT Service shutdown timeout (default: 15s)
+    AUTO_RESTART_SERVICES   Auto-restart failed services (default: true)
+    FORCE_KILL_ON_EXIT      Force kill services on exit (default: true)
 
 For more configuration options, see .env.example
 EOF
@@ -431,25 +439,138 @@ start_application() {
         2>&1 | tee workspace/system_logs/api_server.log
 }
 
+# === ENHANCED SERVER MANAGEMENT FUNCTIONS ===
+
+# Function to stop all services using ServerManager
+stop_services_enhanced() {
+    print_status "Stopping all services using ServerManager..."
+    if command -v python3 &> /dev/null; then
+        python3 -c "
+import sys
+sys.path.insert(0, '.')
+try:
+    from server_manager import ServerManager
+    sm = ServerManager()
+    result = sm.stop_all_services()
+    print(f'Stop result: {result}')
+except Exception as e:
+    print(f'Error: {e}')
+    sys.exit(1)
+"
+    else
+        print_error "Python3 not available for enhanced service management"
+        return 1
+    fi
+}
+
+# Function to show comprehensive status
+show_comprehensive_status() {
+    print_status "Checking comprehensive service status..."
+    if command -v python3 &> /dev/null; then
+        python3 -c "
+import sys
+sys.path.insert(0, '.')
+try:
+    from server_manager import ServerManager
+    sm = ServerManager()
+    status = sm.get_all_status()
+    print('\n=== SERVICE STATUS ===')
+    for service, info in status.items():
+        status_indicator = '✅' if info['is_running'] else '❌'
+        print(f'{status_indicator} {info[\"name\"]}: {info[\"status\"]} (port {info[\"port\"]})')
+    print('')
+except Exception as e:
+    print(f'Error checking status: {e}')
+"
+    else
+        print_error "Python3 not available for status checking"
+        return 1
+    fi
+}
+
+# Function to cleanup ports
+cleanup_ports() {
+    print_status "Cleaning up ports using ServerManager..."
+    if command -v python3 &> /dev/null; then
+        python3 -c "
+import sys
+sys.path.insert(0, '.')
+try:
+    from server_manager import ServerManager
+    sm = ServerManager()
+    result = sm.free_all_ports()
+    print(f'Port cleanup result: {result}')
+except Exception as e:
+    print(f'Error: {e}')
+    sys.exit(1)
+"
+    else
+        print_error "Python3 not available for enhanced port cleanup"
+        return 1
+    fi
+}
+
+# Function to restart services using ServerManager
+restart_services_enhanced() {
+    print_status "Restarting services using ServerManager..."
+    stop_services_enhanced
+    sleep 3
+    start_services
+    show_comprehensive_status
+}
+
+# Function for emergency cleanup
+emergency_cleanup() {
+    print_warning "Initiating emergency cleanup..."
+    if command -v python3 &> /dev/null; then
+        python3 -c "
+import sys
+sys.path.insert(0, '.')
+try:
+    from server_manager import ServerManager
+    sm = ServerManager()
+    result = sm.emergency_cleanup()
+    print(f'Emergency cleanup result: {result}')
+except Exception as e:
+    print(f'Error during emergency cleanup: {e}')
+    # Fallback to basic cleanup
+    import subprocess
+    try:
+        subprocess.run(['docker-compose', '-f', 'docker-compose.services.yml', 'down', '--remove-orphans'], check=False)
+    except:
+        pass
+"
+    else
+        print_warning "Python3 not available, using basic Docker cleanup"
+        docker-compose -f docker-compose.services.yml down --remove-orphans 2>/dev/null || true
+    fi
+}
+
+# === END ENHANCED FUNCTIONS ===
+
 # Parse command line arguments
 case "${1:-}" in
     --services-only)
         start_services
+        show_comprehensive_status
         ;;
     --app-only)
         start_application
         ;;
     --stop-services)
-        stop_services
+        stop_services_enhanced
         ;;
     --restart-services)
-        print_status "Restarting Docker services..."
-        stop_services
-        sleep 2
-        start_services
+        restart_services_enhanced
         ;;
     --status)
-        show_status
+        show_comprehensive_status
+        ;;
+    --cleanup-ports)
+        cleanup_ports
+        ;;
+    --emergency-cleanup)
+        emergency_cleanup
         ;;
     --help|-h)
         show_help
