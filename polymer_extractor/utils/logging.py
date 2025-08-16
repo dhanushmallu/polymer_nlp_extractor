@@ -277,30 +277,39 @@ class Logger:
         self.deduplicator = LogDeduplicator()
         self.truncator = SmartTruncator()
         
-        # Appwrite setup
-        self._setup_appwrite()
+        # Database setup - use universal DatabaseManager for both Appwrite and PostgreSQL
+        self._setup_database()
         
         # Create log files
         self._ensure_log_files_exist()
     
-    def _setup_appwrite(self):
-        """Setup Appwrite client and collection."""
+    def _setup_database(self):
+        """Setup universal database manager for logging."""
         try:
-            from polymer_extractor.utils.paths import APPWRITE_PROJECT_ID, APPWRITE_API_KEY, APPWRITE_ENDPOINT
+            from polymer_extractor.storage.database_manager import DatabaseManager
+            self.database_manager = DatabaseManager()
+            self.database_enabled = True
             
-            self.client = Client()
-            self.client.set_endpoint(APPWRITE_ENDPOINT).set_project(APPWRITE_PROJECT_ID).set_key(APPWRITE_API_KEY)
-            self.databases = Databases(self.client)
-            self.database_id = APPWRITE_LOGS_COLLECTION['database_id']
-            self.collection_id = APPWRITE_LOGS_COLLECTION['collection_id']
-            self.appwrite_enabled = True
-            
+            # Check if we have any database backends available
+            if not self.database_manager.postgres_client and not self.database_manager.appwrite_db:
+                self.database_enabled = False
+                print("[DATABASE_SETUP] No database backends available")
+            else:
+                print(f"[DATABASE_SETUP] Database manager initialized (PostgreSQL: {self.database_manager.postgres_client is not None}, Appwrite: {self.database_manager.appwrite_db is not None})")
+                
         except Exception as e:
-            self.appwrite_enabled = False
-            print(f"[APPWRITE_SETUP_ERROR] {e}")
+            self.database_enabled = False
+            print(f"[DATABASE_SETUP_ERROR] {e}")
+    
+    def _setup_appwrite(self):
+        """Legacy method - kept for compatibility but now handled by universal database manager."""
+        # This method is kept for backward compatibility but functionality moved to _setup_database
+        pass
     
     def _ensure_appwrite_collection(self):
         """Ensure Appwrite logs collection exists with proper schema."""
+        if not self.appwrite_enabled:
+            return
         try:
             # This would normally check/create collection schema
             # Simplified for now to avoid collection setup complexity
@@ -362,15 +371,15 @@ class Logger:
             with open(self.main_log_file, "a", encoding="utf-8") as f:
                 f.write(entry.to_human_readable() + "\n")
     
-    def _sync_to_appwrite(self, entry: LogEntry) -> bool:
-        """Sync log entry to Appwrite with smart truncation and all required attributes."""
-        if not self.appwrite_enabled:
+    def _sync_to_database(self, entry: LogEntry) -> bool:
+        """Sync log entry to database using universal database manager."""
+        if not self.database_enabled:
             return False
-        
+            
         try:
-            # Create document with all required attributes and defaults
+            # Create log document for database storage
             log_doc = {
-                "timestamp": entry.timestamp or datetime.now().isoformat() + "Z",
+                "timestamp": entry.timestamp or datetime.now(),
                 "level": entry.level or "INFO",
                 "message": self.truncator.truncate_message(entry.message or ""),
                 "source": entry.source or "unknown",
@@ -380,31 +389,23 @@ class Logger:
                 "stack_trace": self.truncator.truncate_stack_trace(entry.stack_trace or ""),
                 "file_name": entry.file_name or "",
                 "line_number": entry.line_number or 0,
-                "category": entry.category or "system",
-                "synced_to_appwrite": True,
-                "log_id": ID.unique()
+                "log_category": entry.category or "system"
             }
             
-            self.databases.create_document(
-                database_id=self.database_id,
-                collection_id=self.collection_id,
-                document_id=ID.unique(),
-                data=log_doc
-            )
-            return True
+            # Use universal database manager to create record
+            result = self.database_manager.create_record("system_logs", log_doc)
+            return bool(result and result.get("primary"))
             
-        except AppwriteException as e:
-            # Don't create recursive logs - just print
-            print(f"[APPWRITE_SYNC_ERROR] {str(e)[:200]}")
-            return False
         except Exception as e:
-            print(f"[SYNC_ERROR] {str(e)[:200]}")
+            # Disable database on any sync error to prevent spam
+            self.database_enabled = False
+            print(f"[DATABASE_SYNC_ERROR] Failed to sync log to database: {e}")
             return False
     
     def log(self, level: str, message: str, source: str,
             category: str = "system", event_type: str = "general",
             user_action: bool = False, context: Optional[Dict] = None,
-            error: Optional[Exception] = None) -> None:
+            error: Optional[Exception] = None, extra: Optional[Dict] = None) -> None:
         """
         Create a log entry with enhanced features.
         
@@ -426,9 +427,24 @@ class Logger:
             Additional context information
         error : Exception
             Exception object for stack trace
+        extra : dict
+            Additional context information (alias for context)
         """
         if category not in self.LOG_CATEGORIES:
             category = "system"
+        
+        # Merge extra into context if provided
+        if extra and context:
+            # Merge extra into context
+            merged_context = {**context, **extra}
+        elif extra:
+            # Use extra as context
+            merged_context = extra
+        elif context:
+            # Use context as is
+            merged_context = context
+        else:
+            merged_context = None
         
         # Get caller information
         frame = inspect.stack()[1]
@@ -443,7 +459,7 @@ class Logger:
             source=source,
             event_type=event_type,
             user_action=user_action,
-            context=context,
+            context=merged_context,
             stack_trace=traceback.format_exc() if error else None,
             file_name=file_name,
             line_number=line_number,
@@ -457,11 +473,11 @@ class Logger:
             # Write to local logs
             self._write_local_logs(entry)
             
-            # Sync to cloud (non-blocking)
+            # Sync to database (non-blocking)
             try:
-                self._sync_to_appwrite(entry)
+                self._sync_to_database(entry)
             except Exception:
-                pass  # Don't let cloud sync failures break local logging
+                pass  # Don't let database sync failures break local logging
         
         elif suppression_msg and level in ['WARNING', 'ERROR', 'CRITICAL']:
             # Log suppression message for important levels

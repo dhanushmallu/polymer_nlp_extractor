@@ -107,7 +107,7 @@ class EvaluationService:
 
     def _find_matching_dataset(self, file_stem: str) -> Dict[str, Any]:
         """Find dataset entry in Appwrite matching the file name or fuzzy match."""
-        datasets = db.list_documents(self.datasets_collection)
+        datasets = db.list_records(self.datasets_collection)
         candidates = [d for d in datasets if d.get("type") == "testing"]
 
         for entry in candidates:
@@ -144,7 +144,7 @@ class EvaluationService:
                 return json.load(f)
 
         try:
-            doc = db.get_document(self.extraction_collection, base_name)
+            doc = db.get_record(self.extraction_collection, base_name)
             if doc and doc.get("extracted_entities"):
                 return json.loads(doc["extracted_entities"])
         except Exception as e:
@@ -155,7 +155,7 @@ class EvaluationService:
     def _normalize_groundtruth(self, df: pd.DataFrame) -> List[Dict[str, str]]:
         """Convert ground-truth CSV to long-format entity list."""
         entities = []
-        entity_patterns = ["polymer", "property", "value", "unit", "symbol", "material"]
+        entity_patterns = ["polymer", "property", "value", "unit", "symbol"]
 
         for _, row in df.iterrows():
             sentence = row.get("sentence", "")
@@ -241,7 +241,7 @@ class EvaluationService:
             bucket.create_bucket(bucket_id, "Model evaluation results")
             uploaded = bucket.upload_file(bucket_id, str(csv_path))
 
-            db.create_document("models_metadata", {
+            db.create_record("models_metadata", {
                 "file_name": base_name,
                 "metrics": json.dumps(metrics),
                 "results_csv": uploaded.get("$id", ""),

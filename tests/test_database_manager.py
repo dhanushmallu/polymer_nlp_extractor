@@ -66,26 +66,26 @@ def test_database_manager():
 
     # === Document Tests ===
     print("[TEST] Creating document...")
-    doc = dbm.create_document(TEST_COLLECTION, TEST_DOCUMENT_DATA)
+    doc = dbm.create_record(TEST_COLLECTION, TEST_DOCUMENT_DATA)
     doc_id = doc['$id']
     assert check_logs_for("Created document in")
 
     print("[TEST] Fetching document...")
-    fetched_doc = dbm.get_document(TEST_COLLECTION, doc_id)
+    fetched_doc = dbm.get_record(TEST_COLLECTION, doc_id)
     assert fetched_doc['title'] == "Test Document Title"
 
     print("[TEST] Updating document...")
-    dbm.update_document(TEST_COLLECTION, doc_id, UPDATED_DOCUMENT_DATA)
-    updated_doc = dbm.get_document(TEST_COLLECTION, doc_id)
+    dbm.update_record(TEST_COLLECTION, doc_id, UPDATED_DOCUMENT_DATA)
+    updated_doc = dbm.get_record(TEST_COLLECTION, doc_id)
     assert updated_doc['title'] == "Updated Document Title"
     assert updated_doc['count'] == 2
 
     print("[TEST] Listing documents...")
-    docs = dbm.list_documents(TEST_COLLECTION)
+    docs = dbm.list_records(TEST_COLLECTION)
     assert any(d['$id'] == doc_id for d in docs)
 
     print("[TEST] Deleting document...")
-    dbm.delete_document(TEST_COLLECTION, doc_id)
+    dbm.delete_record(TEST_COLLECTION, doc_id)
     assert check_logs_for("Deleted document")
 
     # === Cleanup ===

@@ -17,3 +17,6 @@ NAMED_GREEK_LETTERS = [
     "Xi", "xi", "Pi", "pi", "Rho", "rho", "Tau", "tau", "Upsilon", "upsilon",
     "Zeta", "zeta", "Eta", "eta", "Chi", "chi", "Psi", "psi", "Phi", "phi"
 ]
+
+# Combined greek letters for easy access
+GREEK_LETTERS = UPPERCASE_GREEK_LETTERS + LOWERCASE_GREEK_LETTERS + NAMED_GREEK_LETTERS

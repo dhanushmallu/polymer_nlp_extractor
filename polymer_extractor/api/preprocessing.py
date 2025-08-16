@@ -19,7 +19,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from polymer_extractor.services.tei_processing_service import TEIProcessingService
-from polymer_extractor.services.tokenizer_service import TokenizerService
+# Phase 0D: Removed TokenizerService import as tokenization is now handled in training notebook
 from polymer_extractor.services.token_packing_service import TokenPackingService
 from polymer_extractor.utils.logging import Logger
 
@@ -58,56 +58,44 @@ class TEIProcessRequest(BaseModel):
 
 @router.post(
     "/tokenize",
-    summary="Audit and extend all tokenizers (standalone testing)"
+    summary="Deprecated - Tokenizer management moved to training notebook",
+    deprecated=True
 )
-def audit_and_extend_tokenizers(force: Optional[bool] = Query(
+def deprecated_tokenizer_audit(force: Optional[bool] = Query(
     default=False,
-    description="Force re-audit and rebuild even if lexicon unchanged."
+    description="Deprecated parameter - tokenization is now handled in training notebook."
 )) -> Dict[str, Any]:
     """
-    Audit and extend tokenizers for all ensemble models.
+    Deprecated endpoint - tokenizer management is now handled exclusively by the training notebook.
+    
+    Phase 0D: This endpoint has been removed as tokenizer extension and management
+    is now performed during model training in the Jupyter notebook.
 
     Parameters
     ----------
     force : bool, optional
-        Force rebuild even if lexicon unchanged. Defaults to False.
+        Deprecated parameter.
 
     Returns
     -------
     dict
-        Audit results for each model.
+        Deprecation notice and redirect information.
     """
     logger.info(
-        message=f"Received tokenizer audit request with force={force}",
-        source="api.preprocessing.audit_and_extend_tokenizers",
+        message=f"Deprecated tokenizer audit endpoint accessed",
+        source="api.preprocessing.deprecated_tokenizer_audit",
         category="api",
-        event_type="request_received"
+        event_type="deprecated_access"
     )
-    try:
-        tokenizer_service = TokenizerService()
-        audit_results = tokenizer_service.audit_and_extend_all(force=force)
-
-        logger.info(
-            message="Tokenizer audit completed successfully.",
-            source="api.preprocessing.audit_and_extend_tokenizers",
-            category="api",
-            event_type="request_completed"
-        )
-        return {
-            "success": True,
-            "message": "All tokenizers audited and extended successfully.",
-            "force_rebuild": force,
-            "audit_results": audit_results
-        }
-    except Exception as e:
-        logger.error(
-            message=f"Tokenizer audit failed: {e}",
-            source="api.preprocessing.audit_and_extend_tokenizers",
-            error=e,
-            category="system",
-            event_type="tokenizer_audit_error"
-        )
-        raise HTTPException(status_code=500, detail=f"Tokenizer audit failed: {str(e)}")
+    
+    return {
+        "status": "deprecated",
+        "message": "Tokenizer audit API has been removed in Phase 0D. Use the training notebook instead.",
+        "redirect": "Use notebooks/model_training_finetuning.ipynb for tokenizer management",
+        "phase": "0D",
+        "training_location": "notebooks/model_training_finetuning.ipynb",
+        "reason": "Tokenizer extension is now performed during model training for consistency"
+    }
 
 
 @router.post(

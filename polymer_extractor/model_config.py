@@ -15,8 +15,7 @@ LABELS = [
     "B-SYMBOL", "I-SYMBOL",
     "B-VALUE", "I-VALUE",
     "B-UNIT", "I-UNIT",
-    "B-POLYMER", "I-POLYMER",
-    "B-MATERIAL", "I-MATERIAL"
+    "B-POLYMER", "I-POLYMER"
 ]
 
 LABEL2ID = {label: idx for idx, label in enumerate(LABELS)}
@@ -25,7 +24,7 @@ ID2LABEL = {idx: label for label, idx in LABEL2ID.items()}
 # Entity type semantic groupings for intelligent processing
 ENTITY_SEMANTIC_GROUPS = {
     "QUANTITATIVE": ["VALUE", "UNIT", "SYMBOL"],
-    "MATERIAL_RELATED": ["POLYMER", "MATERIAL"],
+    "MATERIAL_RELATED": ["POLYMER"],
     "DESCRIPTIVE": ["PROPERTY"],
     "CRITICAL_PAIRS": [("VALUE", "UNIT"), ("PROPERTY", "VALUE"), ("POLYMER", "PROPERTY")]
 }
@@ -91,7 +90,6 @@ ENSEMBLE_MODELS = [
         expertise=ModelExpertise(
             entity_weights={
                 "POLYMER": 2.2,
-                "MATERIAL": 1.8,
                 "PROPERTY": 1.4,
                 "SYMBOL": 1.2,
                 "VALUE": 1.1,
@@ -117,7 +115,6 @@ ENSEMBLE_MODELS = [
         base_weight=1.3,
         expertise=ModelExpertise(
             entity_weights={
-                "MATERIAL": 2.0,
                 "PROPERTY": 1.5,
                 "POLYMER": 1.2,
                 "SYMBOL": 1.1,
@@ -134,8 +131,8 @@ ENSEMBLE_MODELS = [
             specialization_domains=["materials_science", "condensed_matter"]
         ),
         training_config={"lr": 2e-5, "epochs": 5, "weight_decay": 0.01},
-        preprocessing_requirements=["materials_normalization", "scientific_notation"],
-        postprocessing_steps=["materials_validation", "unit_standardization"]
+        preprocessing_requirements=["scientific_notation"],
+        postprocessing_steps=["unit_standardization"]
     ),
 
     EnsembleModel(
@@ -148,8 +145,7 @@ ENSEMBLE_MODELS = [
                 "VALUE": 1.2,
                 "UNIT": 1.2,
                 "SYMBOL": 1.1,
-                "POLYMER": 1.0,
-                "MATERIAL": 1.0
+                "POLYMER": 1.0
             },
             context_strengths={
                 "general_science": 1.5,
@@ -174,8 +170,7 @@ ENSEMBLE_MODELS = [
                 "VALUE": 1.6,
                 "UNIT": 1.6,
                 "PROPERTY": 1.3,
-                "POLYMER": 0.8,
-                "MATERIAL": 0.9
+                "POLYMER": 0.8
             },
             context_strengths={
                 "physics": 1.8,
@@ -198,7 +193,6 @@ ENSEMBLE_MODELS = [
         expertise=ModelExpertise(
             entity_weights={
                 "POLYMER": 0.6,
-                "MATERIAL": 0.7,
                 "PROPERTY": 0.8,
                 "SYMBOL": 0.5,
                 "VALUE": 0.6,
@@ -224,7 +218,6 @@ class DynamicThresholds:
 
     BASE_THRESHOLDS = {
         "POLYMER": 0.85,  # Strict threshold for polymers
-        "MATERIAL": 0.85, # Strict threshold for materials
         "PROPERTY": 0.80, # High threshold for properties
         "VALUE": 0.78,    # High threshold for values
         "UNIT": 0.78,     # High threshold for units
@@ -364,7 +357,6 @@ POST_PROCESSING_CONFIG = {
     # start with confidence thresholds
     "CONFIDENCE_THRESHOLDS": {
         "POLYMER": 0.87,    # Very strict for polymers
-        "MATERIAL": 0.87,   # Very strict for materials
         "PROPERTY": 0.82,   # Strict for properties
         "VALUE": 0.80,      # Strict for values
         "UNIT": 0.80,       # Strict for units
@@ -413,11 +405,6 @@ ENTITY_RELATIONSHIP_PATTERNS = {
         "distance_threshold": 20,
         "confidence_boost": 0.08,  # Increased boost for POLYMER-PROPERTY
         "required_confidence": 0.7
-    },
-    "MATERIAL_CONTEXT_COHERENCE": {
-        "distance_threshold": 50,
-        "confidence_boost": 0.06,  # Increased boost for material context
-        "required_confidence": 0.75
     }
 }
 
@@ -428,7 +415,7 @@ MODEL_ERROR_PATTERNS = {
         "correction_strategies": ["merge_polymer_segments", "unit_validation"]
     },
     "MatSciBERT": {
-        "common_errors": ["material_property_confusion", "symbol_misclassification"],
+        "common_errors": ["symbol_misclassification", "property_boundary_errors"],
         "correction_strategies": ["context_disambiguation", "symbol_validation"]
     },
     "SciBERT": {

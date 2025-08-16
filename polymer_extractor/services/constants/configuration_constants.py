@@ -30,8 +30,63 @@ EXPORT_FORMATS = {
     }
 }
 
-# Entity types - now includes MATERIAL
-ENTITY_TYPES = ["polymer", "property", "value", "unit", "symbol", "material"]
+# Entity types
+ENTITY_TYPES = ["polymer", "property", "value", "unit", "symbol"]
+
+# Model configuration constants (Phase 0B)
+MODEL_DEFAULT_CONFIG = {
+    # GitHub integration settings
+    "github_integration": {
+        "upload_enabled": True,
+        "version_strict": True,
+        "auto_version_increment": False,
+        "force_retrain": False,
+        "paired_creation": True,
+        "validate_compatibility": True
+    },
+    
+    # Enhanced features (Phase 0B)
+    "phase_0b_features": {
+        "enhanced_sentence_splitting": True,
+        "improved_vocabulary_extension": True,
+        "advanced_confidence_thresholds": True,
+        "semantic_coherence_validation": True,
+        "over_merging_prevention": True,
+        "material_entity_removal": True
+    },
+    
+    # Training environment
+    "training_environment": {
+        "wandb_enabled": False,  # Set to True if WANDB_API_KEY available
+        "logging_enabled": True,
+        "verbose_training": True,
+        "gpu_optimization": True
+    },
+    
+    # File paths (relative to workspace)
+    "paths": {
+        "models_dir": "models/finetuned",
+        "tokenizers_dir": "models/tokenizers", 
+        "exports_dir": "exports",
+        "training_data_dir": "datasets/training",
+        "testing_data_dir": "datasets/testing"
+    }
+}
+
+# Required environment variables for training
+REQUIRED_ENV_VARS = [
+    "TOKENIZERS_REMOTE_URL",
+    "FINETUNED_REMOTE_URL",
+    "MODELS_VERSION",
+    "MODELS_ROOT"
+]
+
+# Optional environment variables
+OPTIONAL_ENV_VARS = [
+    "HF_TOKEN",          # For GitHub integration
+    "WANDB_API_KEY",     # For experiment tracking
+    "GITHUB_TOKEN"       # Alternative to HF_TOKEN
+]
 
 SCIENTIFIC_SECTIONS = [
     # all possible ways of naming abstract

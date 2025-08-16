@@ -241,8 +241,6 @@ class PostProcessor:
                 processed = self._validate_polymer(processed)
             elif step == "synonym_resolution":
                 processed = self._resolve_synonyms(processed)
-            elif step == "materials_validation":
-                processed = self._validate_materials(processed)
             elif step == "physics_validation":
                 processed = self._validate_physics(processed)
             elif step == "dimensional_analysis":
@@ -350,38 +348,6 @@ class PostProcessor:
             pred.validation_boosts_applied.append(f"{validation_type}:+{boost}")
         
         pred.postprocessing_applied.append("synonym_resolution")
-        return pred
-    
-    def _validate_materials(self, pred: PredictionCandidate) -> PredictionCandidate:
-        """Validate material entities using property table and patterns."""
-        if pred.entity_type != "MATERIAL":
-            return pred
-        
-        text_lower = pred.text.lower().strip()
-        
-        # Check against property table for materials
-        if text_lower in self.property_table:
-            validation_type = "PROPERTY_TABLE_MATCH"
-            pred.validation_flags.append(validation_type)
-            boost = get_validation_boost(validation_type)
-            pred.calibrated_confidence = min(pred.calibrated_confidence + boost, 1.0)
-            pred.validation_boosts_applied.append(f"{validation_type}:+{boost}")
-        
-        # Check for scientific material patterns
-        scientific_patterns = [
-            r"^[A-Z][a-z]+[0-9]*$",  # Chemical formula pattern
-            r".*oxide$", r".*sulfide$", r".*nitride$", r".*carbide$",  # Material endings
-            r".*alloy$", r".*composite$", r".*ceramic$"  # Material types
-        ]
-        
-        if any(re.search(pattern, text_lower) for pattern in scientific_patterns):
-            validation_type = "SCIENTIFIC_PATTERN_MATCH"
-            pred.validation_flags.append(validation_type)
-            boost = get_validation_boost(validation_type)
-            pred.calibrated_confidence = min(pred.calibrated_confidence + boost, 1.0)
-            pred.validation_boosts_applied.append(f"{validation_type}:+{boost}")
-            
-        pred.postprocessing_applied.append("materials_validation")
         return pred
     
     def _validate_physics(self, pred: PredictionCandidate) -> PredictionCandidate:
@@ -548,8 +514,7 @@ class PostProcessor:
             "PROPERTY": 0.01,   # Properties can be variable
             "UNIT": 0.03,       # Units are typically clear-cut
             "VALUE": -0.01,     # Values can be ambiguous
-            "SYMBOL": 0.02,     # Symbols are typically precise
-            "MATERIAL": 0.01    # Materials moderately clear
+            "SYMBOL": 0.02      # Symbols are typically precise
         }
         
         type_adjustment = type_calibrations.get(pred.entity_type, 0.0)
@@ -2575,7 +2540,7 @@ class EnsembleInferenceService:
             )[:2048]
             
             db = DatabaseManager()
-            db.create_document("extraction_results", {
+            db.create_record("extraction_results", {
                 "file_name": base_name,
                 "extracted_entities": truncated_results,
                 "results_file_path": str(results_path),

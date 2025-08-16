@@ -193,11 +193,11 @@ async def delete_ground_truth_dataset(dataset_id: str):
     """
     try:
         # Delete metadata from Appwrite
-        gt_service.db_manager.delete_document("datasets_metadata", dataset_id)
+        gt_service.db_manager.delete_record("datasets_metadata", dataset_id)
         logger.info(f"Deleted dataset metadata: {dataset_id}", source="groundtruth_api")
 
         # Delete local and cloud file (best effort)
-        metadata = gt_service.db_manager.get_document("datasets_metadata", dataset_id)
+        metadata = gt_service.db_manager.get_record("datasets_metadata", dataset_id)
         local_path = Path(metadata.get('local_path', ''))
         if local_path.exists():
             local_path.unlink()

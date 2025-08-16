@@ -49,13 +49,13 @@ class GroundTruthService:
 
     # Required minimum columns for ground truth data
     REQUIRED_COLUMNS = {
-        'filename', 'heading', 'polymer', 'material',
+        'filename', 'heading', 'polymer',
         'property', 'symbol', 'unit', 'value', 'sentence'
     }
 
     # Expandable columns that can have slots (e.g., polymer_1, polymer_2)
     EXPANDABLE_COLUMNS = {
-        'polymer', 'material', 'property', 'symbol', 'unit', 'value'
+        'polymer', 'property', 'symbol', 'unit', 'value'
     }
 
     # Non-expandable columns
@@ -707,7 +707,7 @@ class GroundTruthService:
         cleaned_df = df.copy()
 
         # Fill NaN values with empty strings for text columns
-        text_columns = ['filename', 'heading', 'polymer', 'material', 'property',
+        text_columns = ['filename', 'heading', 'polymer', 'property',
                         'symbol', 'unit', 'sentence']
 
         for col in text_columns:
@@ -890,7 +890,7 @@ class GroundTruthService:
         })
 
         # Store metadata in database
-        self.db_manager.create_document(
+        self.db_manager.create_record(
             collection_id="datasets_metadata",
             data=metadata
         )
@@ -909,7 +909,7 @@ class GroundTruthService:
             List of dataset metadata.
         """
         try:
-            datasets = self.db_manager.list_documents("datasets_metadata")
+            datasets = self.db_manager.list_records("datasets_metadata")
             logger.info(f"Retrieved {len(datasets)} ground truth datasets",
                         source="GroundTruthService")
             return datasets
@@ -934,7 +934,7 @@ class GroundTruthService:
         """
         try:
             # Get dataset metadata
-            metadata = self.db_manager.get_document("datasets_metadata", dataset_id)
+            metadata = self.db_manager.get_record("datasets_metadata", dataset_id)
 
             # Check if local file exists
             local_path = Path(metadata['local_path'])

@@ -180,12 +180,12 @@ class TEIProcessingService:
     def _update_metadata(self, metadata: dict):
         try:
             file_name = metadata.get("file_name")
-            candidates = self.db.list_documents("file_metadata")
+            candidates = self.db.list_records("file_metadata")
             match = next((doc for doc in candidates if doc.get("file_name") == file_name), None)
             if match:
-                self.db.update_document("file_metadata", document_id=match["$id"], data=metadata)
+                self.db.update_record("file_metadata", document_id=match["$id"], data=metadata)
             else:
-                self.db.create_document("file_metadata", data=metadata)
+                self.db.create_record("file_metadata", data=metadata)
         except Exception as e:
             logger.error(f"Failed to update metadata for {metadata.get('file_name')}",
                          source="TEIProcessingService._update_metadata", error=e)

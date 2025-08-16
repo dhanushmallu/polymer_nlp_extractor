@@ -1,0 +1,111 @@
+# Docker Compose for Infrastructure Services Only
+# Run with: docker-compose -f docker-compose.services.yml up -d
+
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: polymer_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-polymer_extractor}
+      POSTGRES_USER: ${POSTGRES_USER:-pnlp_db_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-9MFiCQtz2PYZdChRK7VAMWtTKGTQZFKqjFdU}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=C --lc-ctype=C"
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/sql:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pnlp_db_user} -d ${POSTGRES_DB:-polymer_extractor}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - polymer_network
+
+  # Neo4j Graph Database
+  neo4j:
+    image: neo4j:5.15-community
+    container_name: polymer_neo4j
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: ${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:-37njY9TNEnmUxATqUGBvUZj9EqFDyxWvLspX}
+      NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_dbms_security_procedures_unrestricted: apoc.*
+      NEO4J_dbms_security_procedures_allowlist: apoc.*
+      NEO4J_dbms_connector_https_advertised__address: localhost:7473
+      NEO4J_dbms_connector_http_advertised__address: localhost:7474
+      NEO4J_dbms_connector_bolt_advertised__address: localhost:7687
+    ports:
+      - "${NEO4J_HTTP_PORT:-7474}:7474"   # HTTP
+      - "${NEO4J_HTTPS_PORT:-7473}:7473"  # HTTPS  
+      - "${NEO4J_PORT:-7687}:7687"        # Bolt
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+      - neo4j_conf:/conf
+      - ./kg/cypher:/var/lib/neo4j/import
+    healthcheck:
+      test: ["CMD", "cypher-shell", "-u", "${NEO4J_USER:-neo4j}", "-p", "${NEO4J_PASSWORD:-37njY9TNEnmUxATqUGBvUZj9EqFDyxWvLspX}", "RETURN 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - polymer_network
+
+  # GROBID Document Processing Service
+  grobid:
+    image: lfoppiano/grobid:0.8.2
+    container_name: polymer_grobid
+    restart: unless-stopped
+    ports:
+      - "${GROBID_PORT:-8070}:8070"
+    environment:
+      JAVA_OPTS: "-Xmx4g"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8070/api/isalive"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - polymer_network
+
+  # Optional: pgAdmin for PostgreSQL management
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: polymer_pgadmin
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@example.com}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin123}
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+    ports:
+      - "${PGADMIN_PORT:-5050}:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    depends_on:
+      - postgres
+    networks:
+      - polymer_network
+    profiles:
+      - admin  # Only start with: docker-compose --profile admin up
+
+volumes:
+  postgres_data:
+    driver: local
+  neo4j_data:
+    driver: local
+  neo4j_logs:
+    driver: local
+  neo4j_conf:
+    driver: local
+  pgadmin_data:
+    driver: local
+
+networks:
+  polymer_network:
+    driver: bridge
+    name: polymer_network

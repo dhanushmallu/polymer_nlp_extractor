@@ -33,6 +33,9 @@ EXPORTS_DIR: str = os.path.join(WORKSPACE_DIR, "exports")                     # 
 LOGS_DIR = SYSTEM_LOGS_DIR  # System logs directory
 
 # Appwrite Configuration
+APPWRITE_ENDPOINT: str = os.getenv("APPWRITE_ENDPOINT", "")
+APPWRITE_PROJECT_ID: str = os.getenv("APPWRITE_PROJECT_ID", "")
+APPWRITE_API_KEY: str = os.getenv("APPWRITE_API_KEY", "")
 
 # === Appwrite Buckets === #
 APPWRITE_MODEL_BUCKET_PREFIX: str = "polymer_model_bucket"               # Versioned buckets like polymer_model_bucket_V1.0

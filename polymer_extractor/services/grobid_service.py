@@ -67,15 +67,22 @@ class GrobidService:
     with built-in resilience and non-blocking storage operations.
     """
 
-    def __init__(self, server_url: str = "http://localhost:8070"):
+    def __init__(self, server_url: str = None):
         """
         Initialize GROBID service with optional custom server URL.
 
         Parameters
         ----------
         server_url : str, optional
-            GROBID server URL. Defaults to "http://localhost:8070".
+            GROBID server URL. If not provided, will be constructed from environment variables.
+            Defaults to "http://{GROBID_HOST}:{GROBID_PORT}" from env or "http://localhost:8070".
         """
+        if server_url is None:
+            # Build URL from environment variables
+            grobid_host = os.getenv("GROBID_HOST", "localhost")
+            grobid_port = os.getenv("GROBID_PORT", "8070")
+            server_url = f"http://{grobid_host}:{grobid_port}"
+            
         self.grobid_server_url = server_url
         self.grobid_process = None
         self.supported_formats = {'.pdf', '.xml', '.html', '.htm'}
@@ -656,7 +663,7 @@ class GrobidService:
         })
 
         # Save metadata to database
-        self.db_manager.create_document(
+        self.db_manager.create_record(
             collection_id="file_metadata",
             data=metadata
         )

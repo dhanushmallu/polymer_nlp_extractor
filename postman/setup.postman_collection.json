@@ -1,0 +1,295 @@
+{
+  "info": {
+    "name": "polymer-extractor [SETUP]",
+    "description": "Complete API collection for testing Setup Service endpoints",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Health & Analysis",
+      "item": [
+        {
+          "name": "Health Check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{pnlp}}/api/setup/health",
+              "host": ["{{pnlp}}"],
+              "path": ["api", "setup", "health"]
+            },
+            "description": "Check the health status of all database systems"
+          }
+        },
+        {
+          "name": "System Analysis",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{pnlp}}/api/setup/analyze",
+              "host": ["{{pnlp}}"],
+              "path": ["api", "setup", "analyze"]
+            },
+            "description": "Get detailed system configuration and status analysis"
+          }
+        }
+      ]
+    },
+    {
+      "name": "System Operations",
+      "item": [
+        {
+          "name": "Initialize System",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": ""
+            },
+            "url": {
+              "raw": "{{pnlp}}/api/setup/initialize",
+              "host": ["{{pnlp}}"],
+              "path": ["api", "setup", "initialize"]
+            },
+            "description": "Initialize complete database system based on environment configuration"
+          }
+        },
+        {
+          "name": "Reset Databases (All)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"postgres\": true,\n  \"neo4j\": true,\n  \"appwrite\": true,\n  \"preserve_logs\": true\n}"
+            },
+            "url": {
+              "raw": "{{pnlp}}/api/setup/reset",
+              "host": ["{{pnlp}}"],
+              "path": ["api", "setup", "reset"]
+            },
+            "description": "Reset all databases with log preservation"
+          }
+        },
+        {
+          "name": "Reset Databases (Selective)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"postgres\": true,\n  \"neo4j\": false,\n  \"appwrite\": true,\n  \"preserve_logs\": false\n}"
+            },
+            "url": {
+              "raw": "{{pnlp}}/api/setup/reset",
+              "host": ["{{pnlp}}"],
+              "path": ["api", "setup", "reset"]
+            },
+            "description": "Reset only PostgreSQL and Appwrite, skip Neo4j"
+          }
+        },
+        {
+          "name": "Clean Install",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"databases\": [\"postgres\", \"neo4j\", \"appwrite\"],\n  \"preserve_logs\": false\n}"
+            },
+            "url": {
+              "raw": "{{pnlp}}/api/setup/clean-install",
+              "host": ["{{pnlp}}"],
+              "path": ["api", "setup", "clean-install"]
+            },
+            "description": "Perform complete clean installation (stop → reset → initialize → health check)"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Service Management",
+      "item": [
+        {
+          "name": "Start All Services",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"services\": null\n}"
+            },
+            "url": {
+              "raw": "{{pnlp}}/api/setup/services/start",
+              "host": ["{{pnlp}}"],
+              "path": ["api", "setup", "services", "start"]
+            },
+            "description": "Start all configured database services"
+          }
+        },
+        {
+          "name": "Start Specific Services",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"services\": [\"postgres\", \"neo4j\"]\n}"
+            },
+            "url": {
+              "raw": "{{pnlp}}/api/setup/services/start",
+              "host": ["{{pnlp}}"],
+              "path": ["api", "setup", "services", "start"]
+            },
+            "description": "Start only PostgreSQL and Neo4j services"
+          }
+        },
+        {
+          "name": "Stop All Services",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"services\": null\n}"
+            },
+            "url": {
+              "raw": "{{pnlp}}/api/setup/services/stop",
+              "host": ["{{pnlp}}"],
+              "path": ["api", "setup", "services", "stop"]
+            },
+            "description": "Stop all database services"
+          }
+        },
+        {
+          "name": "Stop Specific Services",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"services\": [\"postgres\"]\n}"
+            },
+            "url": {
+              "raw": "{{pnlp}}/api/setup/services/stop",
+              "host": ["{{pnlp}}"],
+              "path": ["api", "setup", "services", "stop"]
+            },
+            "description": "Stop only PostgreSQL service"
+          }
+        },
+        {
+          "name": "Restart All Services",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"services\": null\n}"
+            },
+            "url": {
+              "raw": "{{pnlp}}/api/setup/services/restart",
+              "host": ["{{pnlp}}"],
+              "path": ["api", "setup", "services", "restart"]
+            },
+            "description": "Restart all database services"
+          }
+        },
+        {
+          "name": "Restart Specific Services",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"services\": [\"neo4j\"]\n}"
+            },
+            "url": {
+              "raw": "{{pnlp}}/api/setup/services/restart",
+              "host": ["{{pnlp}}"],
+              "path": ["api", "setup", "services", "restart"]
+            },
+            "description": "Restart only Neo4j service"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Root Endpoint",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{pnlp}}/",
+          "host": ["{{pnlp}}"],
+          "path": [""]
+        },
+        "description": "Test basic API connectivity"
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://127.0.0.1:8000",
+      "type": "string"
+    },
+    {
+      "key": "pnlp",
+      "value": "http://127.0.0.1:8000",
+      "type": "string"
+    }
+  ]
+}

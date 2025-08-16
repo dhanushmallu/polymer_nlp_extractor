@@ -817,7 +817,7 @@ class StrictSentenceProcessor:
         # Check for common scientific terms that might be fragmented
         combined = text1 + text2
         scientific_terms = [
-            'epoxy', 'polymer', 'material', 'temperature', 'property', 'density',
+            'epoxy', 'polymer', 'temperature', 'property', 'density',
             'modulus', 'strength', 'crystalline', 'amorphous', 'thermoplastic'
         ]
         

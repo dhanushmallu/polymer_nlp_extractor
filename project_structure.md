@@ -1,7 +1,47 @@
 # Changelog for Project Structure
 - `/notebooks` unchanged
+- `/api`: adds `groundtruth.py`, `preproc│   ├── storage/                        │   ├── utils/                                            # 🛠️ Utility functions and helper modules
+│   │   ├── __init__.py                                   # Utils package initialization
+│   │   ├── paths.py                                      # 📁 Path management and workspace directory utilities
+│   │   ├── logging.py                                    # 📝 PLANNED REFACTOR: Independent logging with direct PostgreSQL access for system_logs              # 💾 REFACTORED data persistence and database management
+│   │   ├── __init__.py                                   # Storage package initialization
+│   │   ├── appwrite_client.py                            # ☁️ Appwrite client (TO BE RENAMED to bucket_client.py with universal storage)
+│   │   ├── bucket_manager.py                             # 🗂️ File bucket operations using universal storage interface (TO BE UPDATED)
+│   │   ├── database_manager.py                           # 🗄️ REFACTORED: PostgreSQL+Neo4j only (APPWRITE REMOVAL PLANNED)
+│   │   ├── graph_manager.py                              # 🕸️ Neo4j graph database operations and relationship management
+│   │   ├── neo4j_client.py                               # 🕸️ Neo4j graph database client for semantic relationships
+│   │   ├── postgresql_client.py                          # 🐘 PostgreSQL client for relational data and complex queriesy`
+# Changelog for Project Structure
+
+## Recent Changes (Data Layer Refactor)
+- **MAJOR REFACTOR**: Complete migration from Appwrite database to PostgreSQL+Neo4j+Flexible Storage architecture
+- `/storage`: 
+  - **PLANNED**: Rename `appwrite_client.py` to `bucket_client.py` with universal storage interface (local/Appwrite/S3)
+  - **PLANNED**: Update `database_manager.py` to remove all Appwrite database dependencies
+  - Enhanced PostgreSQL and Neo4j clients for primary data operations
+- **SERVER MANAGEMENT**: **PLANNED**: Move `server_manager.py` to project root for centralized service management
+- **ENVIRONMENT**: **PLANNED**: Remove all Appwrite database configuration, add flexible storage configuration
+- **LOGGING**: **PLANNED**: Make logging system independent with direct PostgreSQL access for system_logs table
+- **DEPRECATED METHODS**: **PLANNED**: Add stubs for legacy Appwrite methods to prevent runtime errors during transition
+- **CLEANUP COMPLETED**: Removed `scripts/`, `polymer_nlp_extractor.egg-info/`, and `migration_backup_1755160407/` directories
+
+## Notes
+- **Excluded from structure**: IDE-specific folders (`.git/`, `.idea/`, `.vscode/`, `.venv/`), `model_updates/` (internal documentation)
+- **Current state**: Some refactor changes are planned but not yet implemented (marked as PLANNED/TO BE UPDATED)
+- **Data layer refactor**: See `data_layer_refactor.md` for complete implementation plan
+
+## Historical Changes
+- `/notebooks` unchanged
 - `/api`: adds `groundtruth.py`, `preprocessing.py`
-- `/services`: renames fine_tuning.py to `fine_tune_service.py`, adds `groundtruth_service.py`, `preprocessing_service.py`, renames `tei_processing.py` to `tei_processing_service.py`, moves `templates.py` to `constants/` package, renames `token_packing.py` to `token_packing_service.py`, renames `ensemble_inference.py` to `ensemble_inference_service.py`, renames `evaluation_testing.py` to `evaluation_service.py`, renames `tokenizer_audit.py` to `tokenizer_service.py`, adds knowledge graph services
+- `/services`: renames fine_tuning.py to ~~`fine_tune_service.py`~~ (MOVED TO THE NOTEBOOK), adds `groundtruth_service.py`, `preprocessing_service.py`, renames `tei_processing.py` to `tei_processing_service.py`, moves `templates.py` to `constants/` package, renames `token_packing.py` to `token_packing_service.py`, renames `ensemble_inference.py` to `ensemble_inference_service.py`, renames `evaluation_testing.py` to `evaluation_service.py`, renames `tokenizer_audit.py` to ~~`tokenizer_service.py`~~ (MOVED TO THE NOTEBOOK), adds knowledge graph services
+- splits `constants.py` into `/services/constants/` package with:
+  - configuration_constants.py: contains CONTENT_MARKERS, SCIENTIFIC_SECTIONS, ENTITY_TYPES, EXPORT_FORMATS and MEASUREMENT_PATTERNS
+  - value_formats.py: contains VALUE_FORMATS
+- `/storage`: renames `database.py` to `database_manager.py`, renames `bucket.py` to `bucket_manager.py`, adds PostgreSQL and Neo4j clients
+- `/repositories`: **NEW** - implements repository pattern for database abstraction
+- `/knowledge_graph`: **NEW** - dedicated knowledge graph services and validators
+- `/utils`: adds ~~file_utils.py~~ (removed), ~~lexicon_guard.py~~ (removed), ~~preprocessing.py~~ (removed), ~~validators.py~~ (removed)
+- ~~`/cli`~~ (removed): previously contained CLI interfaces
 - splits `constants.py` into `/services/constants/` package with:
   - configuration_constants.py: contains CONTENT_MARKERS, SCIENTIFIC_SECTIONS, ENTITY_TYPES, EXPORT_FORMATS and MEASUREMENT_PATTERNS
   - greek_letters.py: contains UPPERCASE_GREEK_LETTERS, LOWERCASE_GREEK_LETTERS, NAMED_GREEK_LETTERS
@@ -16,40 +56,52 @@
 - `/storage`: renames `database.py` to `database_manager.py`, renames `bucket.py` to `bucket_manager.py`, adds PostgreSQL and Neo4j clients
 - `/repositories`: **NEW** - implements repository pattern for database abstraction
 - `/knowledge_graph`: **NEW** - dedicated knowledge graph services and validators
-- `/utils`: adds `file_utils.py`, ~~lexicon_guard.py~~ (removed), ~~preprocessing.py~~ (removed), ~~validators.py~~ (removed)
+- `/utils`: adds ~~file_utils.py~~ (removed), ~~lexicon_guard.py~~ (removed), ~~preprocessing.py~~ (removed), ~~validators.py~~ (removed)
 - ~~`/cli`~~ (removed): previously contained CLI interfaces
 
 ```angular2html
 polymer_nlp_extractor/
 │
+├── server.sh                                       # 🚀 Enhanced server startup script with service management flags
+├── config.json                                           # ⚙️ Application configuration settings
+├── pyproject.toml                                        # 📦 Python project metadata and dependencies
+├── requirements.txt                                      # 📋 Python package dependencies
+├── docker-compose.services.yml                          # 🐳 Docker services for PostgreSQL, Neo4j, and GROBID
+├── Dockerfile                                            # 🐳 Container definition for production deployment
+├── Procfile                                              # 🚀 Process definitions for deployment platforms
+├── .env.example                                          # 🔧 Environment variables template (UPDATED for flexible storage)
+├── data_layer_refactor.md                               # 📋 Comprehensive refactor action plan and implementation guide
+├── phase-1-breakdown.md                                 # 📊 Phase 1 implementation breakdown
+├── phase-1-realignment.md                               # 🔄 Phase 1 realignment documentation  
+├── project_timeline.md                                  # 📅 Project development timeline
+├── test_main.http                                        # 🧪 HTTP test requests for API validation
+│
 ├── polymer_extractor/                                    # 🎯 Core application package
 │   ├── __init__.py                                       # Package initialization and version info
+│   ├── main.py                                           # 🚀 FastAPI application entry point (PLANNED: server_manager integration)
 │   ├── model_config.py                                   # 🧠 Central model configurations, ensemble settings, and thresholds
+│   │
 │   ├── api/                                              # 🌐 FastAPI endpoints and request handlers
 │   │   ├── __init__.py                                   # API package initialization
 │   │   ├── ensemble_inference.py                         # 🔮 Main inference API endpoints for ensemble processing
-│   │   ├── finetune.py                                   # 🎓 Model fine-tuning API endpoints and training workflows
 │   │   ├── grobid.py                                     # 📄 PDF to XML conversion API using GROBID service
 │   │   ├── evaluation.py                                 # 📊 Model evaluation and performance assessment APIs
-│   │   ├── setup.py                                      # ⚙️ System setup and configuration management APIs
-│   │   ├── session.py                                    # 📋 Session management and tracking APIs
+│   │   ├── setup.py                                      # ⚙️ System setup and configuration management APIs (UPDATED with storage config)
 │   │   ├── groundtruth.py                                # ✅ Ground truth data handling and validation APIs
 │   │   ├── preprocessing.py                              # 🔧 Data preprocessing and cleaning APIs
 │   │
 │   ├── services/                                         # 🛠️ Business logic and core processing services
 │   │   ├── __init__.py                                   # Services package initialization
-│   │   ├── enhanced_merging_service.py                   # 🔀 Advanced entity merging with TEI alignment and deduplication
-│   │   ├── ensemble_inference_service.py                 # 🎯 Core ensemble inference engine with semantic boosting
-│   │   ├── evaluation_service.py                         # 📈 Model evaluation, metrics calculation, and performance analysis
-│   │   ├── fine_tune_service.py                          # 🎯 Model fine-tuning orchestration and training management
-│   │   ├── fixed_ensemble_service.py                     # 🔧 Legacy ensemble service for backward compatibility
-│   │   ├── grobid_service.py                             # 📑 GROBID integration for PDF processing and XML conversion
-│   │   ├── groundtruth_service.py                        # 📝 Ground truth data processing and validation logic
-│   │   ├── preprocessing_service.py                      # 🧹 Data preprocessing, cleaning, and transformation
-│   │   ├── setup_service.py                              # 🔧 System initialization, dependency checks, and configuration
-│   │   ├── tei_processing_service.py                     # 📜 TEI XML processing, sentence extraction, and text alignment
-│   │   ├── token_packing_service.py                      # 📦 Tokenization and sequence packing for model input
-│   │   ├── tokenizer_service.py                          # 🔤 Tokenizer management, extension, and vocabulary handling
+│   │   ├── server_manager.py                             # 🎛️ Server management for PostgreSQL, Neo4j, and GROBID (PLANNED: move to root)
+│   │   ├── enhanced_merging_service.py                   # 🔀 Advanced entity merging with TEI alignment and deduplication (PLANNED: use DatabaseManager)
+│   │   ├── ensemble_inference_service.py                 # 🎯 Core ensemble inference engine with semantic boosting (PLANNED: use DatabaseManager)
+│   │   ├── evaluation_service.py                         # 📈 Model evaluation, metrics calculation, and performance analysis (PLANNED: use DatabaseManager)
+│   │   ├── grobid_service.py                             # 📑 GROBID integration for PDF processing (PLANNED: remove server management, use BucketClient)
+│   │   ├── groundtruth_service.py                        # 📝 Ground truth data processing and validation logic (PLANNED: use DatabaseManager)
+│   │   ├── setup_service.py                              # 🔧 System initialization and configuration (MAJOR PLANNED UPDATE: Appwrite removal, logging integration, deprecated methods)
+│   │   ├── tei_processing_service.py                     # 📜 TEI XML processing, sentence extraction, and text alignment (PLANNED: use DatabaseManager)
+│   │   ├── token_packing_service.py                      # 📦 Tokenization and sequence packing for model input (PLANNED: use DatabaseManager)
+│   │   │
 │   │   ├── constants/                                    # 📚 Domain-specific constants and lookup tables
 │   │   │   ├── __init__.py                               # Constants package initialization
 │   │   │   ├── configuration_constants.py                # ⚙️ System configuration constants and content markers
@@ -60,15 +112,17 @@ polymer_nlp_extractor/
 │   │   │   ├── scientific_symbols.py                     # 🔣 Scientific symbols and mathematical notation
 │   │   │   ├── scientific_units.py                       # 📏 Comprehensive units database with SI and imperial systems
 │   │   │   ├── templates.py                              # 📝 Sentence templates for data augmentation and training
+│   │   │   ├── training_constants.py                     # 🎓 Training-specific constants and parameters
 │   │   │   ├── value_formats.py                          # 🔢 Numerical value patterns and format recognition
 │   │
-│   ├── storage/                                          # 💾 Data persistence and database management
+│   ├── storage/                                          # 💾 REFACTORED data persistence and database management
 │   │   ├── __init__.py                                   # Storage package initialization
-│   │   ├── appwrite_client.py                            # ☁️ Appwrite cloud storage integration for file management
-│   │   ├── bucket_manager.py                             # 🗂️ File bucket operations, uploads, and downloads
-│   │   ├── database_manager.py                           # 🗄️ Legacy Appwrite database operations and document management
-│   │   ├── postgresql_client.py                          # 🐘 PostgreSQL client for relational data and complex queries
+│   │   ├── bucket_client.py                              # 🗂️ UNIVERSAL storage client (local/Appwrite/S3) - RENAMED from appwrite_client.py
+│   │   ├── bucket_manager.py                             # 🗂️ File bucket operations using universal storage interface (UPDATED)
+│   │   ├── database_manager.py                           # 🗄️ REFACTORED: PostgreSQL+Neo4j only, all Appwrite database logic removed
+│   │   ├── graph_manager.py                              # �️ Neo4j graph database operations and relationship management
 │   │   ├── neo4j_client.py                               # 🕸️ Neo4j graph database client for semantic relationships
+│   │   ├── postgresql_client.py                          # 🐘 PostgreSQL client for relational data and complex queries
 │   │
 │   ├── repositories/                                     # 🏛️ Repository pattern for clean data access abstraction
 │   │   ├── __init__.py                                   # Repositories package initialization
@@ -92,13 +146,61 @@ polymer_nlp_extractor/
 │   ├── utils/                                            # 🛠️ Utility functions and helper modules
 │   │   ├── __init__.py                                   # Utils package initialization
 │   │   ├── paths.py                                      # 📁 Path management and workspace directory utilities
-│   │   ├── logging.py                                    # 📝 Centralized logging configuration and context management
-│   │   ├── file_utils.py                                 # 📂 File operations, compression, and archive management
-│   │
-│   ├── main.py                                           # 🚀 FastAPI application entry point and server initialization
-│   ├── config.py                                         # ⚙️ Environment configuration and settings management
+│   │   ├── logging.py                                    # 📝 REFACTORED: Independent logging with direct PostgreSQL access for system_logs
+│
+├── db/                                                   # 🗄️ Database schema and migration files
+│   ├── sql/                                              # 📊 PostgreSQL schema definitions
+│   │   ├── 001_core.sql                                  # 🏗️ Core database schema with system_logs table
+│
+├── kg/                                                   # 🧠 Knowledge graph schema and initialization
+│   ├── cypher/                                           # 🔍 Neo4j Cypher scripts for graph setup
 │
 ├── notebooks/                                            # 📓 Jupyter notebooks for interactive development and analysis
+│   ├── model_training_finetuning.ipynb                   # 🎓 Model training and fine-tuning workflows
+│   ├── polymer_extractor.ipynb                           # 🔬 Polymer extraction analysis and testing
+│
+├── tests/                                                # 🧪 Test suite for application components
+│   ├── __init__.py                                       # Tests package initialization
+│   ├── test_appwrite_client.py                           # ☁️ Appwrite client testing (TO BE UPDATED for bucket_client)
+│   ├── test_bucket_manager.py                            # 🗂️ Bucket manager testing
+│   ├── test_database_manager.py                          # �️ Database manager testing (UPDATED for PostgreSQL+Neo4j)
+│   ├── test_finetune.py                                  # 🎓 Fine-tuning functionality tests
+│   ├── test_grobid.py                                    # 📄 GROBID service testing
+│   ├── test_inference.py                                 # 🔮 Inference engine testing
+│   ├── test_logger.py                                    # 📝 Logging system testing (TO BE UPDATED for independent logging)
+│   ├── test_setup_service.py                             # ⚙️ Setup service testing (TO BE UPDATED for refactored service)
+│
+├── workspace/                                            # 🗂️ Working directory for data processing and model assets
+│   ├── datasets/                                         # 📊 Training and evaluation datasets
+│   ├── exports/                                          # 📤 Processed data exports and results
+│   ├── extracted_xml/                                    # 📄 GROBID-extracted XML files from PDFs
+│   ├── ground_truth/                                     # ✅ Manually annotated ground truth data
+│   ├── migration_output/                                 # 📦 Database migration artifacts
+│   ├── models/                                           # 🧠 Trained model artifacts and checkpoints
+│   ├── processed_xml/                                    # 🔄 Post-processed XML with enhanced annotations
+│   ├── public/                                           # 🌐 Default storage path for flexible storage system
+│   ├── raw_inputs/                                       # 📥 Raw input files and documents
+│   ├── reports/                                          # 📊 Generated analysis reports and visualizations
+│   ├── samples/                                          # 🧪 Sample data for testing and development
+│   ├── system_logs/                                      # 📝 Application logs and debugging information
+│   ├── grobid-0.8.2.zip                                 # 📦 GROBID installation archive
+│
+├── postman/                                              # 🧪 API testing and documentation
+│   ├── setup.postman_collection.json                     # 📋 Postman API test collection
+│
+├── ref/                                                  # 📚 Reference materials and documentation
+│   ├── 057_ensemble_excerpt.json                         # 📄 Sample ensemble processing results
+│   ├── 057_ensemble_results.json                         # 📊 Full ensemble analysis results
+│   ├── 057.pdf                                           # � Reference scientific paper
+│   ├── 057.tei.xml                                       # 📄 TEI XML conversion of reference paper
+│   ├── constants_excerpt.py                              # 🔧 Legacy constants reference
+│   ├── documentation_example.txt                         # 📝 Documentation formatting examples
+│   ├── sample_expected_result_from_model.json            # 🎯 Expected model output format
+│   ├── test_057_excerpt.csv                              # 📊 Test data excerpt for validation
+│   ├── test_057.csv                                      # 📊 Complete test dataset
+│   ├── exports_old/                                      # 📦 Legacy export archives
+│   ├── exports_old_v2/                                   # 📦 Previous version export archives
+```
 │   ├── polymer_extractor.ipynb                          # 🧪 Main research notebook for model experimentation and analysis
 │
 ├── workspace/                                            # 💼 Working directory for data processing and model artifacts
