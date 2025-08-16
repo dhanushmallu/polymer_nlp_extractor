@@ -19,6 +19,7 @@ DROP TABLE IF EXISTS extraction_sessions CASCADE;
 DROP TABLE IF EXISTS sentences CASCADE;
 DROP TABLE IF EXISTS datasets CASCADE;
 DROP TABLE IF EXISTS research_papers CASCADE;
+DROP TABLE IF EXISTS system_logs CASCADE;
 
 -- Enable necessary extensions
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
@@ -51,6 +52,32 @@ CREATE INDEX idx_papers_doi ON research_papers(doi);
 CREATE INDEX idx_papers_created ON research_papers(created_at);
 CREATE INDEX idx_papers_status ON research_papers(processing_status);
 CREATE INDEX idx_papers_filename ON research_papers(file_name);
+
+-- System logs for comprehensive logging and debugging
+CREATE TABLE system_logs (
+    id SERIAL PRIMARY KEY,
+    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    level VARCHAR(20) NOT NULL CHECK (level IN ('DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL')),
+    message TEXT NOT NULL,
+    source VARCHAR(255),
+    event_type VARCHAR(100) DEFAULT 'general',
+    user_action BOOLEAN DEFAULT false,
+    context JSONB,
+    stack_trace TEXT,
+    file_name VARCHAR(255),
+    line_number INTEGER,
+    category VARCHAR(50) DEFAULT 'system',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Indexes for system_logs
+CREATE INDEX idx_logs_timestamp ON system_logs(timestamp);
+CREATE INDEX idx_logs_level ON system_logs(level);
+CREATE INDEX idx_logs_source ON system_logs(source);
+CREATE INDEX idx_logs_event_type ON system_logs(event_type);
+CREATE INDEX idx_logs_category ON system_logs(category);
+CREATE INDEX idx_logs_created ON system_logs(created_at);
+CREATE INDEX idx_logs_context_gin ON system_logs USING GIN(context); -- For JSONB queries
 
 -- Sentences extracted from papers (character-level precision)
 CREATE TABLE sentences (
@@ -485,7 +512,7 @@ SELECT 'PostgreSQL schema 001_core.sql created successfully!' as status,
 FROM information_schema.tables 
 WHERE table_schema = 'public' 
   AND table_name IN (
-    'research_papers', 'sentences', 'datasets', 'model_configurations', 
+    'research_papers', 'system_logs', 'sentences', 'datasets', 'model_configurations', 
     'model_entity_expertise', 'extraction_sessions', 'entities', 
     'entity_attributes', 'value_unit_pairs', 'property_measurements',
     'validation_logs', 'performance_metrics', 'kg_relationship_cache'

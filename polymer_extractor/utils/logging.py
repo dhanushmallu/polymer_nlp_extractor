@@ -11,15 +11,13 @@ from typing import Optional, Dict, Any, Set
 from dataclasses import dataclass, asdict
 from threading import Lock
 import hashlib
+import psycopg2
+import psycopg2.extras
 
 import numpy as np
 import torch
-from appwrite.client import Client
-from appwrite.exception import AppwriteException
-from appwrite.id import ID
-from appwrite.services.databases import Databases
 
-from polymer_extractor.utils.paths import LOGS_DIR, APPWRITE_LOGS_COLLECTION
+from polymer_extractor.utils.paths import LOGS_DIR
 
 
 @dataclass
@@ -36,7 +34,6 @@ class LogEntry:
     file_name: Optional[str] = None
     line_number: Optional[int] = None
     category: str = "system"
-    synced_to_appwrite: bool = False  # Default to False to avoid sync errors
     
     def to_dict(self, include_nulls: bool = True) -> Dict[str, Any]:
         """Convert to dictionary, optionally excluding null values."""
@@ -48,224 +45,255 @@ class LogEntry:
     def to_human_readable(self) -> str:
         """Convert to human-readable log line with clean formatting."""
         timestamp_short = self.timestamp.split('T')[1][:8] if 'T' in self.timestamp else self.timestamp[:8]
-        context_str = ""
-        if self.context and any(self.context.values()):
-            context_items = [f"{k}={v}" for k, v in self.context.items() if v]
-            if context_items:
-                context_str = f" | {', '.join(context_items)}"
+        level_colored = f"[{self.level:5}]"
+        source_info = f"{self.source}" if self.source else "system"
         
-        stack_info = f" | `{self.file_name}`:{self.line_number}" if self.file_name else ""
+        # Basic format: [TIME] [LEVEL] [SOURCE] MESSAGE
+        base_line = f"{timestamp_short} {level_colored} [{source_info:15}] {self.message}"
         
-        # Clean stack trace - remove visual artifacts and format file paths
-        clean_message = self.message
-        if self.stack_trace:
-            # Clean stack trace artifacts - remove common control characters
-            import re
-            clean_trace = self.stack_trace.replace("^^^^", "")
-            # Remove any invisible control characters that might cause formatting issues
-            clean_trace = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]', '', clean_trace)
-            # Add backticks to file paths
-            clean_trace = re.sub(r'(/[\w/.-]+\.py)', r'`\1`', clean_trace)
-            clean_message += f"\nStack trace:\n{clean_trace}"
+        # Add context if available
+        if self.context:
+            context_str = ", ".join([f"{k}={v}" for k, v in self.context.items() if k != "details"])
+            if context_str:
+                base_line += f" | {context_str}"
         
-        return f"[{timestamp_short}] {self.level:<7} {self.source:<20} | {clean_message}{context_str}{stack_info}"
-
-
-class SmartTruncator:
-    """Handles intelligent truncation of log data for cloud storage."""
-    
-    # Cloud storage limits
-    MESSAGE_LIMIT = 1000  # Increased from 512
-    CONTEXT_LIMIT = 2000  # Increased limit
-    STACK_TRACE_LIMIT = 3000  # Increased for better error debugging
-    
-    @staticmethod
-    def truncate_message(message: str) -> str:
-        """Truncate message to fit cloud storage limits."""
-        if len(message) <= SmartTruncator.MESSAGE_LIMIT:
-            return message
-        return message[:SmartTruncator.MESSAGE_LIMIT - 3] + "..."
-    
-    @staticmethod
-    def truncate_stack_trace(stack_trace: str) -> str:
-        """Truncate stack trace intelligently."""
-        if not stack_trace or len(stack_trace) <= SmartTruncator.STACK_TRACE_LIMIT:
-            return stack_trace or ""
-        
-        lines = stack_trace.split('\n')
-        if len(lines) <= 10:
-            return stack_trace[:SmartTruncator.STACK_TRACE_LIMIT - 3] + "..."
-        
-        # Keep first 5 and last 5 lines for context
-        truncated = lines[:5] + ['  ... (truncated) ...'] + lines[-5:]
-        result = '\n'.join(truncated)
-        
-        if len(result) > SmartTruncator.STACK_TRACE_LIMIT:
-            return result[:SmartTruncator.STACK_TRACE_LIMIT - 3] + "..."
-        return result
-    
-    @staticmethod
-    def truncate_context(context: Dict[str, Any]) -> Dict[str, Any]:
-        """Truncate context dictionary intelligently."""
-        if not context:
-            return {}
-        
-        result = {}
-        current_size = 0
-        
-        for key, value in context.items():
-            # Convert value to string for size calculation
-            str_value = str(value)
-            item_size = len(key) + len(str_value) + 10  # Extra for JSON formatting
-            
-            if current_size + item_size > SmartTruncator.CONTEXT_LIMIT:
-                result["_truncated"] = True
-                break
-            
-            # Truncate individual values if too long
-            if len(str_value) > 200:
-                result[key] = str_value[:197] + "..."
-            else:
-                result[key] = value
-            
-            current_size += item_size
-        
-        return result
-    
-    @staticmethod
-    def truncate_stack_trace(stack_trace: str) -> str:
-        """Truncate stack trace while preserving most relevant parts."""
-        if not stack_trace or len(stack_trace) <= SmartTruncator.STACK_TRACE_LIMIT:
-            return stack_trace
-        
-        lines = stack_trace.split('\n')
-        
-        # Keep first few lines (error type) and last few lines (actual error location)
-        if len(lines) > 10:
-            kept_lines = lines[:3] + ['  ... [TRUNCATED] ...'] + lines[-7:]
-            truncated = '\n'.join(kept_lines)
-            
-            if len(truncated) <= SmartTruncator.STACK_TRACE_LIMIT:
-                return truncated
-        
-        # Fallback to simple truncation
-        return stack_trace[:SmartTruncator.STACK_TRACE_LIMIT - 3] + "..."
-    
-    @staticmethod
-    def truncate_context(context: Dict[str, Any]) -> Dict[str, Any]:
-        """Truncate context while preserving important keys."""
-        if not context:
-            return context
-        
-        context_str = json.dumps(context, ensure_ascii=False)
-        if len(context_str) <= SmartTruncator.CONTEXT_LIMIT:
-            return context
-        
-        # Prioritize certain keys
-        priority_keys = ['error', 'id', 'status', 'file_name', 'count', 'size']
-        result = {}
-        
-        # Add priority keys first
-        for key in priority_keys:
-            if key in context:
-                result[key] = context[key]
-        
-        # Add other keys until we hit the limit
-        remaining_budget = SmartTruncator.CONTEXT_LIMIT - len(json.dumps(result, ensure_ascii=False))
-        
-        for key, value in context.items():
-            if key not in result:
-                value_str = json.dumps(value, ensure_ascii=False)
-                if len(value_str) < remaining_budget:
-                    result[key] = value
-                    remaining_budget -= len(value_str)
-                else:
-                    break
-        
-        return result
+        return base_line
 
 
 class LogDeduplicator:
-    """Handles deduplication and rate limiting of repetitive log messages."""
-    
-    def __init__(self, window_minutes: int = 5, max_duplicates: int = 3):
-        self.window_minutes = window_minutes
-        self.max_duplicates = max_duplicates
-        self.message_counts = defaultdict(deque)
+    """Efficient deduplication to prevent log spam."""
+    def __init__(self, window_seconds: int = 60, max_occurrences: int = 5):
+        self.window_seconds = window_seconds
+        self.max_occurrences = max_occurrences
+        self.recent_logs = deque()
+        self.log_counts = defaultdict(int)
         self.lock = Lock()
     
-    def _get_message_key(self, entry: LogEntry) -> str:
-        """Generate a key for deduplication based on message content and source."""
-        # Create hash of message + source + event_type for deduplication
-        content = f"{entry.source}:{entry.event_type}:{entry.message}"
-        return hashlib.md5(content.encode()).hexdigest()
-    
-    def should_log(self, entry: LogEntry) -> tuple[bool, Optional[str]]:
-        """
-        Determine if this log entry should be recorded.
-        
-        Returns:
-            (should_log, suppression_message)
-        """
+    def should_log(self, message: str, level: str, source: str) -> bool:
+        """Check if log should be recorded or is spam."""
         with self.lock:
-            message_key = self._get_message_key(entry)
             now = datetime.now()
-            
-            # Clean old entries outside the window
-            window_start = now - timedelta(minutes=self.window_minutes)
-            timestamps = self.message_counts[message_key]
-            
-            while timestamps and timestamps[0] < window_start:
-                timestamps.popleft()
-            
-            # Check if we should suppress this message
-            if len(timestamps) >= self.max_duplicates:
-                suppression_msg = f"Suppressed duplicate message (seen {len(timestamps)} times in {self.window_minutes}min)"
-                return False, suppression_msg
-            
-            # Add this timestamp
-            timestamps.append(now)
-            return True, None
-            now = datetime.now()
-            key = self._get_message_key(entry)
+            log_key = f"{level}:{source}:{self._get_message_pattern(message)}"
             
             # Clean old entries
-            cutoff = now - timedelta(minutes=self.window_minutes)
-            while self.message_counts[key] and self.message_counts[key][0] < cutoff:
-                self.message_counts[key].popleft()
+            cutoff_time = now - timedelta(seconds=self.window_seconds)
+            while self.recent_logs and self.recent_logs[0][0] < cutoff_time:
+                old_timestamp, old_key = self.recent_logs.popleft()
+                self.log_counts[old_key] -= 1
+                if self.log_counts[old_key] <= 0:
+                    del self.log_counts[old_key]
             
-            count = len(self.message_counts[key])
+            # Check current count
+            current_count = self.log_counts[log_key]
+            if current_count >= self.max_occurrences:
+                return False
             
-            if count < self.max_duplicates:
-                self.message_counts[key].append(now)
-                return True, None
+            # Record this log
+            self.recent_logs.append((now, log_key))
+            self.log_counts[log_key] += 1
+            return True
+    
+    def _get_message_pattern(self, message: str) -> str:
+        """Extract pattern from message to group similar logs."""
+        # Remove numbers, IDs, timestamps to group similar messages
+        pattern = re.sub(r'\d+', 'N', message)
+        pattern = re.sub(r'[a-f0-9]{8,}', 'ID', pattern)  # Remove hex IDs
+        return pattern[:100]  # Limit length
+
+
+class SmartTruncator:
+    """Smart content truncation for log context."""
+    def __init__(self, max_string_length: int = 500, max_list_items: int = 10):
+        self.max_string_length = max_string_length
+        self.max_list_items = max_list_items
+    
+    def truncate_context(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        """Truncate context values intelligently."""
+        if not context:
+            return context
+        
+        truncated = {}
+        for key, value in context.items():
+            truncated[key] = self._truncate_value(value)
+        return truncated
+    
+    def _truncate_value(self, value: Any) -> Any:
+        """Truncate individual value based on type."""
+        if isinstance(value, str):
+            if len(value) > self.max_string_length:
+                return value[:self.max_string_length] + "..."
+        elif isinstance(value, (list, tuple)):
+            if len(value) > self.max_list_items:
+                truncated_list = list(value)[:self.max_list_items]
+                truncated_list.append(f"... and {len(value) - self.max_list_items} more items")
+                return truncated_list
+        elif isinstance(value, dict):
+            if len(value) > self.max_list_items:
+                items = list(value.items())[:self.max_list_items]
+                truncated_dict = dict(items)
+                truncated_dict["..."] = f"and {len(value) - self.max_list_items} more keys"
+                return truncated_dict
+        
+        return value
+
+
+class DirectPostgreSQLLogger:
+    """Direct PostgreSQL connection for logging to avoid circular dependencies."""
+    
+    def __init__(self):
+        self.connection = None
+        self.enabled = False
+        self._setup_connection()
+    
+    def _setup_connection(self):
+        """Setup direct PostgreSQL connection."""
+        try:
+            # Get connection details from environment
+            self.connection = psycopg2.connect(
+                host=os.getenv("POSTGRES_HOST", "localhost"),
+                port=os.getenv("POSTGRES_PORT", "5432"),
+                database=os.getenv("POSTGRES_DB", "polymer_extractor"),
+                user=os.getenv("POSTGRES_USER", "postgres"),
+                password=os.getenv("POSTGRES_PASSWORD", "password")
+            )
+            self.connection.autocommit = True
+            self.enabled = True
+            print("[LOGGING] Direct PostgreSQL connection established")
             
-            # If we've hit the limit, return suppression info
-            suppression_msg = f"[SUPPRESSED] Similar message repeated {count} times in {self.window_minutes}min: {entry.message[:100]}"
-            return False, suppression_msg
+            # Ensure system_logs table exists
+            self._ensure_table_exists()
+            
+        except Exception as e:
+            self.enabled = False
+            print(f"[LOGGING] PostgreSQL connection failed: {e}")
+    
+    def _ensure_table_exists(self):
+        """Ensure system_logs table exists."""
+        try:
+            with self.connection.cursor() as cursor:
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS system_logs (
+                        id SERIAL PRIMARY KEY,
+                        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        level VARCHAR(20) NOT NULL,
+                        message TEXT NOT NULL,
+                        source VARCHAR(255),
+                        event_type VARCHAR(100) DEFAULT 'general',
+                        user_action BOOLEAN DEFAULT false,
+                        context JSONB,
+                        stack_trace TEXT,
+                        file_name VARCHAR(255),
+                        line_number INTEGER,
+                        category VARCHAR(50) DEFAULT 'system',
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                
+                # Create indexes if they don't exist
+                cursor.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON system_logs(timestamp);
+                    CREATE INDEX IF NOT EXISTS idx_logs_level ON system_logs(level);
+                    CREATE INDEX IF NOT EXISTS idx_logs_source ON system_logs(source);
+                    CREATE INDEX IF NOT EXISTS idx_logs_event_type ON system_logs(event_type);
+                    CREATE INDEX IF NOT EXISTS idx_logs_category ON system_logs(category);
+                """)
+                
+        except Exception as e:
+            print(f"[LOGGING] Failed to ensure system_logs table: {e}")
+    
+    def log_to_database(self, log_entry: LogEntry):
+        """Log entry directly to PostgreSQL."""
+        if not self.enabled or not self.connection:
+            return
+        
+        try:
+            with self.connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
+                cursor.execute("""
+                    INSERT INTO system_logs (
+                        timestamp, level, message, source, event_type, user_action,
+                        context, stack_trace, file_name, line_number, category
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """, (
+                    log_entry.timestamp,
+                    log_entry.level,
+                    log_entry.message,
+                    log_entry.source,
+                    log_entry.event_type,
+                    log_entry.user_action,
+                    json.dumps(log_entry.context) if log_entry.context else None,
+                    log_entry.stack_trace,
+                    log_entry.file_name,
+                    log_entry.line_number,
+                    log_entry.category
+                ))
+                
+        except Exception as e:
+            print(f"[LOGGING] Failed to write to database: {e}")
+    
+    def pause_database_operations(self):
+        """Pause database operations for clean installs."""
+        if self.connection:
+            try:
+                self.connection.close()
+            except:
+                pass
+        self.enabled = False
+        print("[LOGGING] Database operations paused")
+    
+    def resume_database_operations(self):
+        """Resume database operations after clean install."""
+        self._setup_connection()
+        if self.enabled:
+            print("[LOGGING] Database operations resumed")
+    
+    def reset_database_table(self):
+        """Reset system_logs table (for clean installs)."""
+        if not self.enabled or not self.connection:
+            return
+        
+        try:
+            with self.connection.cursor() as cursor:
+                cursor.execute("DROP TABLE IF EXISTS system_logs CASCADE")
+                print("[LOGGING] system_logs table dropped")
+            
+            self._ensure_table_exists()
+            print("[LOGGING] system_logs table recreated")
+            
+        except Exception as e:
+            print(f"[LOGGING] Failed to reset system_logs table: {e}")
 
 
 class Logger:
     """
-    Enhanced logging system with smart truncation, deduplication, and clean formatting.
+    Independent logging system with direct PostgreSQL integration.
     
-    Features:
-    - Human-readable local logs with clean formatting
-    - Smart truncation for cloud storage
-    - Deduplication of repetitive messages
-    - Structured JSON logs for machine processing
-    - Category-based log separation
-    - Async cloud sync with retry logic
+    Removed dependency on DatabaseManager to avoid circular imports.
+    Provides file-based and database-based logging with intelligent deduplication.
     """
-
-    LOG_CATEGORIES = ["system", "api", "user", "debug"]
     
-    def __init__(self):
-        """Initialize the enhanced logger."""
-        os.makedirs(LOGS_DIR, exist_ok=True)
+    LOG_LEVELS = {
+        'DEBUG': 10,
+        'INFO': 20,
+        'WARNING': 30,
+        'ERROR': 40,
+        'CRITICAL': 50
+    }
+    
+    LOG_CATEGORIES = ['system', 'api', 'user', 'model', 'database', 'performance']
+    
+    def __init__(self, min_level: str = "INFO", enable_database: bool = True):
+        # Prevent circular import
+        self.min_level = self.LOG_LEVELS.get(min_level.upper(), 20)
+        self.enable_database = enable_database
         
-        # Setup log files - single structured format per category
-        self.local_log_files = {
+        # Thread safety
+        self.lock = Lock()
+        
+        # In-memory buffer for recent logs
+        self.memory_buffer = deque(maxlen=1000)
+        
+        # Category-specific file handles
+        self.category_files = {
             category: os.path.join(LOGS_DIR, f"{category}.log")
             for category in self.LOG_CATEGORIES
         }
@@ -277,254 +305,239 @@ class Logger:
         self.deduplicator = LogDeduplicator()
         self.truncator = SmartTruncator()
         
-        # Database setup - use universal DatabaseManager for both Appwrite and PostgreSQL
-        self._setup_database()
+        # Database setup - direct PostgreSQL connection
+        self.postgres_logger = DirectPostgreSQLLogger()
         
         # Create log files
         self._ensure_log_files_exist()
-    
-    def _setup_database(self):
-        """Setup universal database manager for logging."""
-        try:
-            from polymer_extractor.storage.database_manager import DatabaseManager
-            self.database_manager = DatabaseManager()
-            self.database_enabled = True
+
+    def _ensure_log_files_exist(self):
+        """Ensure all log files and directories exist."""
+        os.makedirs(LOGS_DIR, exist_ok=True)
+        
+        # Touch all category log files
+        for log_file in self.category_files.values():
+            if not os.path.exists(log_file):
+                with open(log_file, 'w') as f:
+                    f.write(f"# Log file created: {datetime.now().isoformat()}\n")
+        
+        # Touch main system log
+        if not os.path.exists(self.main_log_file):
+            with open(self.main_log_file, 'w') as f:
+                f.write(f"# System log created: {datetime.now().isoformat()}\n")
+
+    def _write_to_files(self, log_entry: LogEntry):
+        """Write log entry to appropriate files."""
+        with self.lock:
+            formatted_line = log_entry.to_human_readable() + "\n"
             
-            # Check if we have any database backends available
-            if not self.database_manager.postgres_client and not self.database_manager.appwrite_db:
-                self.database_enabled = False
-                print("[DATABASE_SETUP] No database backends available")
-            else:
-                print(f"[DATABASE_SETUP] Database manager initialized (PostgreSQL: {self.database_manager.postgres_client is not None}, Appwrite: {self.database_manager.appwrite_db is not None})")
-                
-        except Exception as e:
-            self.database_enabled = False
-            print(f"[DATABASE_SETUP_ERROR] {e}")
-    
-    def _setup_appwrite(self):
-        """Legacy method - kept for compatibility but now handled by universal database manager."""
-        # This method is kept for backward compatibility but functionality moved to _setup_database
-        pass
-    
-    def _ensure_appwrite_collection(self):
-        """Ensure Appwrite logs collection exists with proper schema."""
-        if not self.appwrite_enabled:
-            return
+            # Write to category-specific file
+            category_file = self.category_files.get(log_entry.category, self.main_log_file)
+            try:
+                with open(category_file, 'a', encoding='utf-8') as f:
+                    f.write(formatted_line)
+            except Exception as e:
+                print(f"[LOGGING_ERROR] Failed to write to {category_file}: {e}")
+            
+            # Also write to main system log
+            if category_file != self.main_log_file:
+                try:
+                    with open(self.main_log_file, 'a', encoding='utf-8') as f:
+                        f.write(formatted_line)
+                except Exception as e:
+                    print(f"[LOGGING_ERROR] Failed to write to main log: {e}")
+
+    def _write_to_database(self, log_entry: LogEntry):
+        """Write log entry to database if enabled."""
+        if self.enable_database and self.postgres_logger.enabled:
+            try:
+                self.postgres_logger.log_to_database(log_entry)
+            except Exception as e:
+                print(f"[LOGGING_ERROR] Database write failed: {e}")
+
+    def _should_log(self, level: str, message: str, source: str) -> bool:
+        """Check if log should be recorded based on level and deduplication."""
+        if self.LOG_LEVELS.get(level, 0) < self.min_level:
+            return False
+        
+        return self.deduplicator.should_log(message, level, source)
+
+    def _get_caller_info(self, skip_frames: int = 2) -> tuple:
+        """Get caller file name and line number."""
         try:
-            # This would normally check/create collection schema
-            # Simplified for now to avoid collection setup complexity
+            frame = inspect.currentframe()
+            for _ in range(skip_frames):
+                frame = frame.f_back
+                if frame is None:
+                    break
+            
+            if frame:
+                return os.path.basename(frame.f_code.co_filename), frame.f_lineno
+        except:
             pass
-        except AppwriteException as e:
-            print(f"[APPWRITE_COLLECTION_ERROR] {e}")
-    
+        return None, None
+
     def _make_json_safe(self, obj):
-        """Convert non-JSON serializable objects to safe types."""
-        if isinstance(obj, (np.integer, np.int64, np.int32)):
-            return int(obj)
-        elif isinstance(obj, (np.float64, np.float32, np.floating)):
-            return float(obj)
-        elif isinstance(obj, (np.ndarray, torch.Tensor)):
-            return f"<{type(obj).__name__} shape={getattr(obj, 'shape', 'unknown')}>"
-        elif isinstance(obj, dict):
-            return {k: self._make_json_safe(v) for k, v in obj.items()}
+        """Convert object to JSON-safe format."""
+        if obj is None:
+            return None
+        elif isinstance(obj, (str, int, float, bool)):
+            return obj
         elif isinstance(obj, (list, tuple)):
             return [self._make_json_safe(item) for item in obj]
+        elif isinstance(obj, dict):
+            return {str(key): self._make_json_safe(value) for key, value in obj.items()}
+        elif hasattr(obj, '__dict__'):
+            return self._make_json_safe(obj.__dict__)
+        elif isinstance(obj, (np.ndarray, torch.Tensor)):
+            return f"<{type(obj).__name__} shape={obj.shape}>"
         else:
             return str(obj)
-    
-    def _ensure_log_files_exist(self):
-        """Create all necessary log files."""
-        all_files = [self.main_log_file] + list(self.local_log_files.values())
-        
-        for file_path in all_files:
-            if not os.path.exists(file_path):
-                with open(file_path, "w", encoding="utf-8") as f:
-                    f.write("")  # Create empty file
-            if not os.path.exists(file_path):
-                with open(file_path, "w", encoding="utf-8") as f:
-                    f.write("")
-    
-    def _make_json_safe(self, obj):
-        """Convert non-JSON serializable objects to safe types."""
-        if isinstance(obj, (np.integer, np.int64, np.int32)):
-            return int(obj)
-        elif isinstance(obj, (np.float64, np.float32, np.floating)):
-            return float(obj)
-        elif isinstance(obj, (np.ndarray, torch.Tensor)):
-            return obj.tolist()
-        elif isinstance(obj, dict):
-            return {key: self._make_json_safe(value) for key, value in obj.items()}
-        elif isinstance(obj, (list, tuple)):
-            return [self._make_json_safe(item) for item in obj]
-        else:
-            return obj
-    
-    def _write_local_logs(self, entry: LogEntry):
-        """Write to local log files in structured human-readable format."""
-        # Single structured log file per category
-        log_file = self.local_log_files[entry.category]
-        with open(log_file, "a", encoding="utf-8") as f:
-            f.write(entry.to_human_readable() + "\n")
-        
-        # Also write to main system log if it's a system or error log
-        if entry.category in ['system'] or entry.level in ['ERROR', 'CRITICAL']:
-            with open(self.main_log_file, "a", encoding="utf-8") as f:
-                f.write(entry.to_human_readable() + "\n")
-    
-    def _sync_to_database(self, entry: LogEntry) -> bool:
-        """Sync log entry to database using universal database manager."""
-        if not self.database_enabled:
-            return False
-            
-        try:
-            # Create log document for database storage
-            log_doc = {
-                "timestamp": entry.timestamp or datetime.now(),
-                "level": entry.level or "INFO",
-                "message": self.truncator.truncate_message(entry.message or ""),
-                "source": entry.source or "unknown",
-                "event_type": entry.event_type or "general",
-                "user_action": bool(entry.user_action),
-                "context": json.dumps(self.truncator.truncate_context(entry.context or {})),
-                "stack_trace": self.truncator.truncate_stack_trace(entry.stack_trace or ""),
-                "file_name": entry.file_name or "",
-                "line_number": entry.line_number or 0,
-                "log_category": entry.category or "system"
-            }
-            
-            # Use universal database manager to create record
-            result = self.database_manager.create_record("system_logs", log_doc)
-            return bool(result and result.get("primary"))
-            
-        except Exception as e:
-            # Disable database on any sync error to prevent spam
-            self.database_enabled = False
-            print(f"[DATABASE_SYNC_ERROR] Failed to sync log to database: {e}")
-            return False
-    
-    def log(self, level: str, message: str, source: str,
-            category: str = "system", event_type: str = "general",
-            user_action: bool = False, context: Optional[Dict] = None,
-            error: Optional[Exception] = None, extra: Optional[Dict] = None) -> None:
+
+    def log(self, level: str, message: str, source: str = "", event_type: str = "general", 
+            user_action: bool = False, category: str = "system", **context):
         """
-        Create a log entry with enhanced features.
+        Main logging method.
         
-        Parameters:
-        -----------
+        Parameters
+        ----------
         level : str
             Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
         message : str
-            Human-readable message
-        source : str
-            Source component/module
-        category : str
-            Log category (system, api, user, debug)
-        event_type : str
-            Event type for categorization
-        user_action : bool
-            Whether this was triggered by user action
-        context : dict
-            Additional context information
-        error : Exception
-            Exception object for stack trace
-        extra : dict
-            Additional context information (alias for context)
+            Log message
+        source : str, optional
+            Source component
+        event_type : str, optional
+            Type of event being logged
+        user_action : bool, optional
+            Whether this is a user-initiated action
+        category : str, optional
+            Log category for file organization
+        **context
+            Additional context data
         """
-        if category not in self.LOG_CATEGORIES:
-            category = "system"
+        level = level.upper()
         
-        # Merge extra into context if provided
-        if extra and context:
-            # Merge extra into context
-            merged_context = {**context, **extra}
-        elif extra:
-            # Use extra as context
-            merged_context = extra
-        elif context:
-            # Use context as is
-            merged_context = context
-        else:
-            merged_context = None
+        if not self._should_log(level, message, source):
+            return
         
-        # Get caller information
-        frame = inspect.stack()[1]
-        file_name = os.path.basename(frame.filename)
-        line_number = frame.lineno
+        # Get caller info
+        file_name, line_number = self._get_caller_info()
         
         # Create log entry
-        entry = LogEntry(
-            timestamp=datetime.now().isoformat() + "Z",
-            level=level.upper(),
+        log_entry = LogEntry(
+            timestamp=datetime.now().isoformat(),
+            level=level,
             message=message,
-            source=source,
+            source=source or "unknown",
             event_type=event_type,
             user_action=user_action,
-            context=merged_context,
-            stack_trace=traceback.format_exc() if error else None,
+            context=self.truncator.truncate_context(self._make_json_safe(context)) if context else None,
+            stack_trace=None,
             file_name=file_name,
             line_number=line_number,
             category=category
         )
         
-        # Check for deduplication
-        should_log, suppression_msg = self.deduplicator.should_log(entry)
+        # Add to memory buffer
+        self.memory_buffer.append(log_entry)
         
-        if should_log:
-            # Write to local logs
-            self._write_local_logs(entry)
-            
-            # Sync to database (non-blocking)
-            try:
-                self._sync_to_database(entry)
-            except Exception:
-                pass  # Don't let database sync failures break local logging
+        # Write to files
+        self._write_to_files(log_entry)
         
-        elif suppression_msg and level in ['WARNING', 'ERROR', 'CRITICAL']:
-            # Log suppression message for important levels
-            suppression_entry = LogEntry(
-                timestamp=datetime.now().isoformat() + "Z",
-                level="INFO",
-                message=suppression_msg,
-                source="logger",
-                event_type="suppression",
-                category=category,
-                file_name=file_name,
-                line_number=line_number
-            )
-            self._write_local_logs(suppression_entry)
-    
+        # Write to database
+        self._write_to_database(log_entry)
+
     # Convenience methods
-    def info(self, message: str, source: str, **kwargs):
-        """Log info message."""
-        self.log("INFO", message, source, **kwargs)
-    
-    def error(self, message: str, source: str, error: Optional[Exception] = None, **kwargs):
-        """Log error message."""
-        self.log("ERROR", message, source, error=error, **kwargs)
-    
-    def debug(self, message: str, source: str, **kwargs):
+    def debug(self, message: str, source: str = "", **context):
         """Log debug message."""
-        self.log("DEBUG", message, source, category="debug", **kwargs)
+        self.log("DEBUG", message, source, **context)
     
-    def warning(self, message: str, source: str, **kwargs):
+    def info(self, message: str, source: str = "", **context):
+        """Log info message."""
+        self.log("INFO", message, source, **context)
+    
+    def warning(self, message: str, source: str = "", **context):
         """Log warning message."""
-        self.log("WARNING", message, source, **kwargs)
+        self.log("WARNING", message, source, **context)
     
-    def critical(self, message: str, source: str, **kwargs):
-        """Log critical message."""
-        self.log("CRITICAL", message, source, **kwargs)
+    def error(self, message: str, source: str = "", **context):
+        """Log error message with stack trace."""
+        context['stack_trace'] = traceback.format_exc()
+        self.log("ERROR", message, source, **context)
     
-    def user_action(self, message: str, source: str, **kwargs):
-        """Log user action."""
-        kwargs['user_action'] = True
-        kwargs['category'] = 'user'
-        self.log("INFO", message, source, **kwargs)
+    def critical(self, message: str, source: str = "", **context):
+        """Log critical message with stack trace."""
+        context['stack_trace'] = traceback.format_exc()
+        self.log("CRITICAL", message, source, **context)
+
+    # Database management methods for clean installs
+    def pause_database_logging(self):
+        """Pause database logging operations."""
+        if self.postgres_logger:
+            self.postgres_logger.pause_database_operations()
+    
+    def resume_database_logging(self):
+        """Resume database logging operations."""
+        if self.postgres_logger:
+            self.postgres_logger.resume_database_operations()
+    
+    def reset_database_logs(self):
+        """Reset database log table (for clean installs)."""
+        if self.postgres_logger:
+            self.postgres_logger.reset_database_table()
+    
+    def initialize_database_table(self):
+        """Initialize database table (for setup operations)."""
+        if self.postgres_logger:
+            self.postgres_logger._ensure_table_exists()
+
+    # Query methods
+    def get_recent_logs(self, count: int = 100, level: str = None, source: str = None) -> list:
+        """Get recent logs from memory buffer."""
+        logs = list(self.memory_buffer)
+        
+        if level:
+            logs = [log for log in logs if log.level == level.upper()]
+        
+        if source:
+            logs = [log for log in logs if source.lower() in log.source.lower()]
+        
+        return logs[-count:]
+    
+    def get_log_stats(self) -> dict:
+        """Get logging statistics."""
+        recent_logs = list(self.memory_buffer)
+        
+        level_counts = defaultdict(int)
+        source_counts = defaultdict(int)
+        
+        for log in recent_logs:
+            level_counts[log.level] += 1
+            source_counts[log.source] += 1
+        
+        return {
+            "total_recent_logs": len(recent_logs),
+            "level_distribution": dict(level_counts),
+            "top_sources": dict(list(source_counts.items())[:10]),
+            "database_enabled": self.postgres_logger.enabled if self.postgres_logger else False,
+            "log_files": self.category_files
+        }
 
 
-# Create global logger instance
-logger = Logger()
+# Global logger instance
+_logger_instance = None
 
-# Convenience functions for backward compatibility
 def get_logger() -> Logger:
-    """Get the global enhanced logger instance."""
-    return logger
+    """Get or create global logger instance."""
+    global _logger_instance
+    if _logger_instance is None:
+        _logger_instance = Logger()
+    return _logger_instance
+
+
+# Convenience function for backward compatibility
+def log(level: str, message: str, source: str = "", **context):
+    """Log message using global logger."""
+    logger = get_logger()
+    logger.log(level, message, source, **context)
