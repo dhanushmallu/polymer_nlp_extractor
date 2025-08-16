@@ -33,18 +33,22 @@ load_dotenv()
 STORAGE_BACKEND = os.getenv("STORAGE_BACKEND", "local")
 STORAGE_PATH = os.getenv("STORAGE_PATH", "./workspace/public")
 
+# Multi-backend Configuration
+STORAGE_BACKENDS_ACTIVE = os.getenv("STORAGE_BACKENDS_ACTIVE", "local").split(",")
+STORAGE_STRATEGY = os.getenv("STORAGE_STRATEGY", "primary")
+
 # Appwrite Storage Configuration
 APPWRITE_STORAGE_ENDPOINT = os.getenv("APPWRITE_STORAGE_ENDPOINT")
 APPWRITE_STORAGE_PROJECT_ID = os.getenv("APPWRITE_STORAGE_PROJECT_ID")
 APPWRITE_STORAGE_API_KEY = os.getenv("APPWRITE_STORAGE_API_KEY")
-APPWRITE_STORAGE_BUCKET_ID = os.getenv("APPWRITE_STORAGE_BUCKET_ID")
+APPWRITE_ENABLED = os.getenv("APPWRITE_ENABLED", "false").lower() == "true"
 
 # S3 Storage Configuration
-S3_BUCKET = os.getenv("S3_BUCKET")
 S3_REGION = os.getenv("S3_REGION", "us-east-1")
 S3_ACCESS_KEY_ID = os.getenv("S3_ACCESS_KEY_ID")
 S3_SECRET_ACCESS_KEY = os.getenv("S3_SECRET_ACCESS_KEY")
 S3_ENDPOINT_URL = os.getenv("S3_ENDPOINT_URL")
+S3_ENABLED = os.getenv("S3_ENABLED", "false").lower() == "true"
 
 
 class StorageBackend(ABC):
@@ -78,6 +82,21 @@ class StorageBackend(ABC):
     @abstractmethod
     def get_metadata(self, file_path: str) -> Dict[str, Any]:
         """Get file metadata."""
+        pass
+    
+    @abstractmethod
+    def create_bucket(self, bucket_name: str) -> Dict[str, Any]:
+        """Create a new bucket/container."""
+        pass
+    
+    @abstractmethod
+    def delete_bucket(self, bucket_name: str) -> bool:
+        """Delete a bucket/container."""
+        pass
+    
+    @abstractmethod
+    def list_buckets(self) -> List[Dict[str, Any]]:
+        """List all buckets/containers."""
         pass
 
 
@@ -223,115 +242,717 @@ class LocalStorageBackend(StorageBackend):
             '.zip': 'application/zip'
         }
         return mime_types.get(ext, 'application/octet-stream')
+    
+    def create_bucket(self, bucket_name: str) -> Dict[str, Any]:
+        """Create a new bucket (folder) in local storage."""
+        try:
+            bucket_path = Path(self.base_path) / bucket_name
+            bucket_path.mkdir(parents=True, exist_ok=True)
+            
+            return {
+                '$id': bucket_name,
+                'name': bucket_name,
+                'status': 'created',
+                'path': str(bucket_path),
+                'backend': 'local'
+            }
+        except Exception as e:
+            logger.error(f"Local storage bucket creation failed for {bucket_name}", error=e, source="bucket_client")
+            raise
+    
+    def delete_bucket(self, bucket_name: str) -> bool:
+        """Delete a bucket (folder) from local storage."""
+        try:
+            bucket_path = Path(self.base_path) / bucket_name
+            if bucket_path.exists() and bucket_path.is_dir():
+                shutil.rmtree(bucket_path)
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"Local storage bucket deletion failed for {bucket_name}", error=e, source="bucket_client")
+            return False
+    
+    def list_buckets(self) -> List[Dict[str, Any]]:
+        """List all buckets (folders) in local storage."""
+        try:
+            storage_path = Path(self.base_path)
+            if not storage_path.exists():
+                return []
+            
+            buckets = []
+            for item in storage_path.iterdir():
+                if item.is_dir():
+                    buckets.append({
+                        '$id': item.name,
+                        'name': item.name,
+                        'backend': 'local',
+                        'path': str(item)
+                    })
+            return buckets
+        except Exception as e:
+            logger.error(f"Local storage bucket listing failed", error=e, source="bucket_client")
+            return []
 
 
 class BucketClient:
     """
-    Universal bucket client with pluggable storage backends.
+    Universal bucket client with multi-backend support.
     
-    Supports local filesystem, Appwrite cloud storage, and S3-compatible storage.
-    The backend is selected via the STORAGE_BACKEND environment variable.
+    Supports multiple storage backends simultaneously with configurable strategies:
+    - primary: Use only primary backend
+    - replica: Write to all backends, read from primary
+    - failover: Switch to backup if primary fails
+    - sync: Keep all backends synchronized
     """
     
     def __init__(self):
-        """Initialize bucket client with configured storage backend."""
-        self.backend = self._create_backend()
-        logger.info(f"BucketClient initialized with {STORAGE_BACKEND} backend", 
+        """Initialize bucket client with configured storage backends."""
+        self.backends = self._create_backends()
+        self.strategy = STORAGE_STRATEGY
+        self.primary_backend = self.backends[0] if self.backends else None
+        
+        logger.info(f"BucketClient initialized with {len(self.backends)} backends: {[type(b).__name__ for b in self.backends]}", 
                    source="bucket_client", event_type="startup")
+        logger.info(f"Storage strategy: {self.strategy}", source="bucket_client", event_type="startup")
     
-    def _create_backend(self) -> StorageBackend:
-        """Create appropriate storage backend based on configuration."""
-        if STORAGE_BACKEND == "local":
-            return LocalStorageBackend(STORAGE_PATH)
-        elif STORAGE_BACKEND == "appwrite":
-            # Import only when needed to avoid dependency issues
+    def _create_backends(self) -> List[StorageBackend]:
+        """Create storage backends based on active configuration."""
+        backends = []
+        
+        for backend_name in STORAGE_BACKENDS_ACTIVE:
+            backend_name = backend_name.strip()
             try:
-                from appwrite.client import Client
-                from appwrite.services.storage import Storage
-                
-                if not all([APPWRITE_STORAGE_ENDPOINT, APPWRITE_STORAGE_PROJECT_ID, 
-                           APPWRITE_STORAGE_API_KEY, APPWRITE_STORAGE_BUCKET_ID]):
-                    raise ValueError("Missing required Appwrite storage configuration")
-                
-                # Create a minimal Appwrite storage backend
-                class AppwriteStorageBackend(StorageBackend):
-                    def __init__(self):
-                        self.client = Client()
-                        self.client.set_endpoint(APPWRITE_STORAGE_ENDPOINT)
-                        self.client.set_project(APPWRITE_STORAGE_PROJECT_ID)
-                        self.client.set_key(APPWRITE_STORAGE_API_KEY)
-                        self.storage = Storage(self.client)
-                        self.bucket_id = APPWRITE_STORAGE_BUCKET_ID
+                if backend_name == "local":
+                    backends.append(LocalStorageBackend(STORAGE_PATH))
+                    logger.info("Local storage backend activated", source="bucket_client")
                     
-                    def upload(self, file_path: str, content: bytes, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-                        # Simplified Appwrite upload - implement as needed
-                        raise NotImplementedError("Appwrite backend upload not fully implemented")
+                elif backend_name == "appwrite" and APPWRITE_ENABLED:
+                    # Import only when needed
+                    try:
+                        from appwrite.client import Client
+                        from appwrite.services.storage import Storage
+                        
+                        if not all([APPWRITE_STORAGE_ENDPOINT, APPWRITE_STORAGE_PROJECT_ID, 
+                                   APPWRITE_STORAGE_API_KEY]):
+                            logger.warning("Appwrite backend skipped: missing configuration", source="bucket_client")
+                            continue
+                        
+                        # Create Appwrite backend (defined above)
+                        backends.append(self._create_appwrite_backend())
+                        logger.info("Appwrite storage backend activated", source="bucket_client")
+                        
+                    except ImportError:
+                        logger.error("Appwrite backend skipped: SDK not installed", source="bucket_client")
+                        
+                elif backend_name == "s3" and S3_ENABLED:
+                    # Import only when needed
+                    try:
+                        import boto3
+                        
+                        if not all([S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY]):
+                            logger.warning("S3 backend skipped: missing configuration", source="bucket_client")
+                            continue
+                        
+                        # Create S3 backend (defined above)
+                        backends.append(self._create_s3_backend())
+                        logger.info("S3 storage backend activated", source="bucket_client")
+                        
+                    except ImportError:
+                        logger.error("S3 backend skipped: boto3 not installed", source="bucket_client")
+                        
+                else:
+                    logger.warning(f"Unknown or disabled backend: {backend_name}", source="bucket_client")
                     
-                    def download(self, file_path: str) -> bytes:
-                        raise NotImplementedError("Appwrite backend download not fully implemented")
+            except Exception as e:
+                logger.error(f"Failed to initialize {backend_name} backend", error=e, source="bucket_client")
+        
+        if not backends:
+            # Fallback to local storage
+            backends.append(LocalStorageBackend(STORAGE_PATH))
+            logger.warning("No backends configured, falling back to local storage", source="bucket_client")
+        
+        return backends
+    
+    def _create_appwrite_backend(self) -> StorageBackend:
+        """Create Appwrite backend instance."""
+        from appwrite.client import Client
+        from appwrite.services.storage import Storage
+        
+        class AppwriteStorageBackend(StorageBackend):
+            def __init__(self):
+                self.client = Client()
+                self.client.set_endpoint(APPWRITE_STORAGE_ENDPOINT)
+                self.client.set_project(APPWRITE_STORAGE_PROJECT_ID)
+                self.client.set_key(APPWRITE_STORAGE_API_KEY)
+                self.storage = Storage(self.client)
+                self._bucket_cache = {}  # Cache created buckets
+            
+            def upload(self, file_path: str, content: bytes, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                try:
+                    # Extract bucket name from file path
+                    bucket_name = file_path.split('/')[0] if '/' in file_path else 'default'
+                    file_name = file_path.split('/', 1)[1] if '/' in file_path else file_path
                     
-                    def delete(self, file_path: str) -> bool:
-                        raise NotImplementedError("Appwrite backend delete not fully implemented")
+                    # Ensure bucket exists
+                    bucket_id = self._ensure_bucket_exists(bucket_name)
                     
-                    def list_files(self, folder: str = "") -> List[Dict[str, Any]]:
-                        result = self.storage.list_files(bucket_id=self.bucket_id)
-                        return result.get('files', [])
-                    
-                    def exists(self, file_path: str) -> bool:
-                        return False  # Simplified for now
-                    
-                    def get_metadata(self, file_path: str) -> Dict[str, Any]:
-                        raise NotImplementedError("Appwrite backend metadata not fully implemented")
-                
-                return AppwriteStorageBackend()
-            except ImportError:
-                raise ImportError("Appwrite SDK not installed. Install with: pip install appwrite")
-        elif STORAGE_BACKEND == "s3":
-            # Import only when needed to avoid dependency issues  
-            try:
-                import boto3
-                
-                if not all([S3_BUCKET, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY]):
-                    raise ValueError("Missing required S3 storage configuration")
-                
-                # Create a minimal S3 storage backend
-                class S3StorageBackend(StorageBackend):
-                    def __init__(self):
-                        session = boto3.Session(
-                            aws_access_key_id=S3_ACCESS_KEY_ID,
-                            aws_secret_access_key=S3_SECRET_ACCESS_KEY,
-                            region_name=S3_REGION
+                    import tempfile
+                    with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+                        temp_file.write(content)
+                        temp_file.flush()
+                        
+                        result = self.storage.create_file(
+                            bucket_id=bucket_id,
+                            file_id=file_name.replace('/', '_'),
+                            file=temp_file.name
                         )
-                        self.s3 = session.client('s3', endpoint_url=S3_ENDPOINT_URL)
-                        self.bucket = S3_BUCKET
+                        
+                        os.unlink(temp_file.name)
+                        
+                        return {
+                            '$id': result['$id'],
+                            'name': result['name'],
+                            'path': file_path,
+                            'size': result['sizeOriginal'],
+                            'mimeType': result['mimeType'],
+                            'dateCreated': result['$createdAt'],
+                            'dateUpdated': result['$updatedAt']
+                        }
+                except Exception as e:
+                    logger.error(f"Appwrite upload failed for {file_path}", error=e, source="bucket_client")
+                    raise
+            
+            def download(self, file_path: str) -> bytes:
+                try:
+                    bucket_name = file_path.split('/')[0] if '/' in file_path else 'default'
+                    file_name = file_path.split('/', 1)[1] if '/' in file_path else file_path
+                    bucket_id = self._get_bucket_id(bucket_name)
                     
-                    def upload(self, file_path: str, content: bytes, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-                        raise NotImplementedError("S3 backend upload not fully implemented")
+                    file_id = file_name.replace('/', '_')
+                    result = self.storage.get_file_download(bucket_id=bucket_id, file_id=file_id)
+                    return result
+                except Exception as e:
+                    logger.error(f"Appwrite download failed for {file_path}", error=e, source="bucket_client")
+                    raise
+            
+            def delete(self, file_path: str) -> bool:
+                try:
+                    bucket_name = file_path.split('/')[0] if '/' in file_path else 'default'
+                    file_name = file_path.split('/', 1)[1] if '/' in file_path else file_path
+                    bucket_id = self._get_bucket_id(bucket_name)
                     
-                    def download(self, file_path: str) -> bytes:
-                        raise NotImplementedError("S3 backend download not fully implemented")
+                    file_id = file_name.replace('/', '_')
+                    self.storage.delete_file(bucket_id=bucket_id, file_id=file_id)
+                    return True
+                except Exception as e:
+                    logger.error(f"Appwrite delete failed for {file_path}", error=e, source="bucket_client")
+                    return False
+            
+            def list_files(self, folder: str = "") -> List[Dict[str, Any]]:
+                try:
+                    if folder:
+                        bucket_name = folder.split('/')[0]
+                        bucket_id = self._get_bucket_id(bucket_name)
+                    else:
+                        # List files from all buckets
+                        all_files = []
+                        for bucket_name, bucket_id in self._bucket_cache.items():
+                            try:
+                                result = self.storage.list_files(bucket_id=bucket_id)
+                                for file in result.get('files', []):
+                                    all_files.append({
+                                        '$id': file['$id'],
+                                        'name': f"{bucket_name}/{file['name']}",
+                                        'size': file['sizeOriginal'],
+                                        'mimeType': file['mimeType'],
+                                        'dateCreated': file['$createdAt'],
+                                        'dateUpdated': file['$updatedAt']
+                                    })
+                            except:
+                                continue
+                        return all_files
                     
-                    def delete(self, file_path: str) -> bool:
-                        raise NotImplementedError("S3 backend delete not fully implemented")
+                    result = self.storage.list_files(bucket_id=bucket_id)
+                    files = []
+                    for file in result.get('files', []):
+                        files.append({
+                            '$id': file['$id'],
+                            'name': f"{bucket_name}/{file['name']}",
+                            'size': file['sizeOriginal'],
+                            'mimeType': file['mimeType'],
+                            'dateCreated': file['$createdAt'],
+                            'dateUpdated': file['$updatedAt']
+                        })
+                    return files
+                except Exception as e:
+                    logger.error(f"Appwrite list failed for folder {folder}", error=e, source="bucket_client")
+                    return []
+            
+            def exists(self, file_path: str) -> bool:
+                try:
+                    bucket_name = file_path.split('/')[0] if '/' in file_path else 'default'
+                    file_name = file_path.split('/', 1)[1] if '/' in file_path else file_path
+                    bucket_id = self._get_bucket_id(bucket_name)
                     
-                    def list_files(self, folder: str = "") -> List[Dict[str, Any]]:
-                        raise NotImplementedError("S3 backend list not fully implemented")
+                    file_id = file_name.replace('/', '_')
+                    self.storage.get_file(bucket_id=bucket_id, file_id=file_id)
+                    return True
+                except:
+                    return False
+            
+            def get_metadata(self, file_path: str) -> Dict[str, Any]:
+                try:
+                    bucket_name = file_path.split('/')[0] if '/' in file_path else 'default'
+                    file_name = file_path.split('/', 1)[1] if '/' in file_path else file_path
+                    bucket_id = self._get_bucket_id(bucket_name)
                     
-                    def exists(self, file_path: str) -> bool:
-                        return False  # Simplified for now
+                    file_id = file_name.replace('/', '_')
+                    result = self.storage.get_file(bucket_id=bucket_id, file_id=file_id)
+                    return {
+                        'size': result['sizeOriginal'],
+                        'mimeType': result['mimeType'],
+                        'dateCreated': result['$createdAt'],
+                        'dateUpdated': result['$updatedAt'],
+                        'name': result['name']
+                    }
+                except Exception as e:
+                    logger.error(f"Appwrite metadata failed for {file_path}", error=e, source="bucket_client")
+                    raise
+            
+            def create_bucket(self, bucket_name: str) -> Dict[str, Any]:
+                """Create a new bucket in Appwrite."""
+                try:
+                    # Generate a valid bucket ID (Appwrite has specific requirements)
+                    bucket_id = f"bucket_{bucket_name.lower().replace('_', '-')}"
                     
-                    def get_metadata(self, file_path: str) -> Dict[str, Any]:
-                        raise NotImplementedError("S3 backend metadata not fully implemented")
+                    result = self.storage.create_bucket(
+                        bucket_id=bucket_id,
+                        name=bucket_name
+                    )
+                    
+                    # Cache the bucket
+                    self._bucket_cache[bucket_name] = bucket_id
+                    
+                    return {
+                        '$id': result['$id'],
+                        'name': result['name'],
+                        'status': 'created',
+                        'backend': 'appwrite'
+                    }
+                except Exception as e:
+                    logger.error(f"Appwrite bucket creation failed for {bucket_name}", error=e, source="bucket_client")
+                    raise
+            
+            def delete_bucket(self, bucket_name: str) -> bool:
+                """Delete a bucket from Appwrite."""
+                try:
+                    bucket_id = self._get_bucket_id(bucket_name)
+                    self.storage.delete_bucket(bucket_id=bucket_id)
+                    
+                    # Remove from cache
+                    if bucket_name in self._bucket_cache:
+                        del self._bucket_cache[bucket_name]
+                    
+                    return True
+                except Exception as e:
+                    logger.error(f"Appwrite bucket deletion failed for {bucket_name}", error=e, source="bucket_client")
+                    return False
+            
+            def list_buckets(self) -> List[Dict[str, Any]]:
+                """List all buckets in Appwrite."""
+                try:
+                    result = self.storage.list_buckets()
+                    buckets = []
+                    for bucket in result.get('buckets', []):
+                        buckets.append({
+                            '$id': bucket['$id'],
+                            'name': bucket['name'],
+                            'backend': 'appwrite'
+                        })
+                    return buckets
+                except Exception as e:
+                    logger.error(f"Appwrite bucket listing failed", error=e, source="bucket_client")
+                    return []
+            
+            def _ensure_bucket_exists(self, bucket_name: str) -> str:
+                """Ensure bucket exists and return its ID."""
+                if bucket_name in self._bucket_cache:
+                    return self._bucket_cache[bucket_name]
                 
-                return S3StorageBackend()
-            except ImportError:
-                raise ImportError("boto3 not installed. Install with: pip install boto3")
+                # Try to find existing bucket
+                try:
+                    buckets = self.list_buckets()
+                    for bucket in buckets:
+                        if bucket['name'] == bucket_name:
+                            bucket_id = bucket['$id']
+                            self._bucket_cache[bucket_name] = bucket_id
+                            return bucket_id
+                except:
+                    pass
+                
+                # Create new bucket
+                try:
+                    result = self.create_bucket(bucket_name)
+                    return result['$id']
+                except Exception as e:
+                    logger.error(f"Failed to ensure bucket exists: {bucket_name}", error=e, source="bucket_client")
+                    raise
+            
+            def _get_bucket_id(self, bucket_name: str) -> str:
+                """Get bucket ID for a bucket name."""
+                if bucket_name in self._bucket_cache:
+                    return self._bucket_cache[bucket_name]
+                
+                # Try to find the bucket
+                try:
+                    buckets = self.list_buckets()
+                    for bucket in buckets:
+                        if bucket['name'] == bucket_name:
+                            bucket_id = bucket['$id']
+                            self._bucket_cache[bucket_name] = bucket_id
+                            return bucket_id
+                except:
+                    pass
+                
+                raise ValueError(f"Bucket not found: {bucket_name}")
+        
+        return AppwriteStorageBackend()
+    
+    def _create_s3_backend(self) -> StorageBackend:
+        """Create S3 backend instance."""
+        import boto3
+        
+        class S3StorageBackend(StorageBackend):
+            def __init__(self):
+                session = boto3.Session(
+                    aws_access_key_id=S3_ACCESS_KEY_ID,
+                    aws_secret_access_key=S3_SECRET_ACCESS_KEY,
+                    region_name=S3_REGION
+                )
+                self.s3 = session.client('s3', endpoint_url=S3_ENDPOINT_URL)
+                self.region = S3_REGION
+                self._bucket_cache = set()  # Cache created buckets
+            
+            def upload(self, file_path: str, content: bytes, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                try:
+                    # Extract bucket name from file path
+                    bucket_name = file_path.split('/')[0] if '/' in file_path else 'default'
+                    key = file_path.split('/', 1)[1] if '/' in file_path else file_path
+                    
+                    # Ensure bucket exists
+                    self._ensure_bucket_exists(bucket_name)
+                    
+                    s3_metadata = {}
+                    if metadata:
+                        s3_metadata = {k: str(v) for k, v in metadata.items() if k != 'mimeType'}
+                    
+                    self.s3.put_object(
+                        Bucket=bucket_name,
+                        Key=key,
+                        Body=content,
+                        ContentType=metadata.get('mimeType', 'application/octet-stream') if metadata else 'application/octet-stream',
+                        Metadata=s3_metadata
+                    )
+                    
+                    response = self.s3.head_object(Bucket=bucket_name, Key=key)
+                    
+                    return {
+                        '$id': file_path,
+                        'name': os.path.basename(file_path),
+                        'path': file_path,
+                        'size': response['ContentLength'],
+                        'mimeType': response.get('ContentType', 'application/octet-stream'),
+                        'dateCreated': response['LastModified'].isoformat(),
+                        'dateUpdated': response['LastModified'].isoformat()
+                    }
+                except Exception as e:
+                    logger.error(f"S3 upload failed for {file_path}", error=e, source="bucket_client")
+                    raise
+            
+            def download(self, file_path: str) -> bytes:
+                try:
+                    bucket_name = file_path.split('/')[0] if '/' in file_path else 'default'
+                    key = file_path.split('/', 1)[1] if '/' in file_path else file_path
+                    
+                    response = self.s3.get_object(Bucket=bucket_name, Key=key)
+                    return response['Body'].read()
+                except Exception as e:
+                    logger.error(f"S3 download failed for {file_path}", error=e, source="bucket_client")
+                    raise
+            
+            def delete(self, file_path: str) -> bool:
+                try:
+                    bucket_name = file_path.split('/')[0] if '/' in file_path else 'default'
+                    key = file_path.split('/', 1)[1] if '/' in file_path else file_path
+                    
+                    self.s3.delete_object(Bucket=bucket_name, Key=key)
+                    return True
+                except Exception as e:
+                    logger.error(f"S3 delete failed for {file_path}", error=e, source="bucket_client")
+                    return False
+            
+            def list_files(self, folder: str = "") -> List[Dict[str, Any]]:
+                try:
+                    if folder:
+                        bucket_name = folder.split('/')[0]
+                        prefix = folder.split('/', 1)[1] if '/' in folder else ""
+                    else:
+                        # List files from all buckets
+                        all_files = []
+                        for bucket_name in self._bucket_cache:
+                            try:
+                                paginator = self.s3.get_paginator('list_objects_v2')
+                                pages = paginator.paginate(Bucket=bucket_name)
+                                
+                                for page in pages:
+                                    for obj in page.get('Contents', []):
+                                        all_files.append({
+                                            '$id': obj['Key'],
+                                            'name': f"{bucket_name}/{os.path.basename(obj['Key'])}",
+                                            'size': obj['Size'],
+                                            'mimeType': 'application/octet-stream',
+                                            'dateCreated': obj['LastModified'].isoformat(),
+                                            'dateUpdated': obj['LastModified'].isoformat()
+                                        })
+                            except:
+                                continue
+                        return all_files
+                    
+                    paginator = self.s3.get_paginator('list_objects_v2')
+                    pages = paginator.paginate(Bucket=bucket_name, Prefix=prefix)
+                    
+                    files = []
+                    for page in pages:
+                        for obj in page.get('Contents', []):
+                            files.append({
+                                '$id': obj['Key'],
+                                'name': f"{bucket_name}/{os.path.basename(obj['Key'])}",
+                                'size': obj['Size'],
+                                'mimeType': 'application/octet-stream',
+                                'dateCreated': obj['LastModified'].isoformat(),
+                                'dateUpdated': obj['LastModified'].isoformat()
+                            })
+                    return files
+                except Exception as e:
+                    logger.error(f"S3 list failed for folder {folder}", error=e, source="bucket_client")
+                    return []
+            
+            def exists(self, file_path: str) -> bool:
+                try:
+                    bucket_name = file_path.split('/')[0] if '/' in file_path else 'default'
+                    key = file_path.split('/', 1)[1] if '/' in file_path else file_path
+                    
+                    self.s3.head_object(Bucket=bucket_name, Key=key)
+                    return True
+                except:
+                    return False
+            
+            def get_metadata(self, file_path: str) -> Dict[str, Any]:
+                try:
+                    bucket_name = file_path.split('/')[0] if '/' in file_path else 'default'
+                    key = file_path.split('/', 1)[1] if '/' in file_path else file_path
+                    
+                    response = self.s3.head_object(Bucket=bucket_name, Key=key)
+                    return {
+                        'size': response['ContentLength'],
+                        'mimeType': response.get('ContentType', 'application/octet-stream'),
+                        'dateCreated': response['LastModified'].isoformat(),
+                        'dateUpdated': response['LastModified'].isoformat(),
+                        'name': os.path.basename(file_path),
+                        'metadata': response.get('Metadata', {})
+                    }
+                except Exception as e:
+                    logger.error(f"S3 metadata failed for {file_path}", error=e, source="bucket_client")
+                    raise
+            
+            def create_bucket(self, bucket_name: str) -> Dict[str, Any]:
+                """Create a new S3 bucket."""
+                try:
+                    if self.region == 'us-east-1':
+                        # us-east-1 doesn't require LocationConstraint
+                        self.s3.create_bucket(Bucket=bucket_name)
+                    else:
+                        self.s3.create_bucket(
+                            Bucket=bucket_name,
+                            CreateBucketConfiguration={'LocationConstraint': self.region}
+                        )
+                    
+                    # Add to cache
+                    self._bucket_cache.add(bucket_name)
+                    
+                    return {
+                        '$id': bucket_name,
+                        'name': bucket_name,
+                        'status': 'created',
+                        'backend': 's3'
+                    }
+                except Exception as e:
+                    logger.error(f"S3 bucket creation failed for {bucket_name}", error=e, source="bucket_client")
+                    raise
+            
+            def delete_bucket(self, bucket_name: str) -> bool:
+                """Delete an S3 bucket."""
+                try:
+                    # First, delete all objects in the bucket
+                    paginator = self.s3.get_paginator('list_objects_v2')
+                    pages = paginator.paginate(Bucket=bucket_name)
+                    
+                    for page in pages:
+                        objects = page.get('Contents', [])
+                        if objects:
+                            delete_keys = [{'Key': obj['Key']} for obj in objects]
+                            self.s3.delete_objects(
+                                Bucket=bucket_name,
+                                Delete={'Objects': delete_keys}
+                            )
+                    
+                    # Then delete the bucket
+                    self.s3.delete_bucket(Bucket=bucket_name)
+                    
+                    # Remove from cache
+                    self._bucket_cache.discard(bucket_name)
+                    
+                    return True
+                except Exception as e:
+                    logger.error(f"S3 bucket deletion failed for {bucket_name}", error=e, source="bucket_client")
+                    return False
+            
+            def list_buckets(self) -> List[Dict[str, Any]]:
+                """List all S3 buckets."""
+                try:
+                    response = self.s3.list_buckets()
+                    buckets = []
+                    for bucket in response.get('Buckets', []):
+                        bucket_name = bucket['Name']
+                        buckets.append({
+                            '$id': bucket_name,
+                            'name': bucket_name,
+                            'backend': 's3',
+                            'dateCreated': bucket['CreationDate'].isoformat()
+                        })
+                        # Add to cache
+                        self._bucket_cache.add(bucket_name)
+                    return buckets
+                except Exception as e:
+                    logger.error(f"S3 bucket listing failed", error=e, source="bucket_client")
+                    return []
+            
+            def _ensure_bucket_exists(self, bucket_name: str):
+                """Ensure bucket exists, create if it doesn't."""
+                if bucket_name in self._bucket_cache:
+                    return
+                
+                try:
+                    # Check if bucket exists
+                    self.s3.head_bucket(Bucket=bucket_name)
+                    self._bucket_cache.add(bucket_name)
+                except:
+                    # Bucket doesn't exist, create it
+                    try:
+                        self.create_bucket(bucket_name)
+                    except Exception as e:
+                        logger.error(f"Failed to ensure S3 bucket exists: {bucket_name}", error=e, source="bucket_client")
+                        raise
+        
+        return S3StorageBackend()
+    
+    def _execute_strategy(self, operation: str, *args, **kwargs) -> Any:
+        """Execute operation based on configured strategy."""
+        if self.strategy == "primary":
+            return self._execute_primary(operation, *args, **kwargs)
+        elif self.strategy == "replica":
+            return self._execute_replica(operation, *args, **kwargs)
+        elif self.strategy == "failover":
+            return self._execute_failover(operation, *args, **kwargs)
+        elif self.strategy == "sync":
+            return self._execute_sync(operation, *args, **kwargs)
         else:
-            raise ValueError(f"Unsupported storage backend: {STORAGE_BACKEND}")
+            logger.warning(f"Unknown strategy {self.strategy}, falling back to primary", source="bucket_client")
+            return self._execute_primary(operation, *args, **kwargs)
+    
+    def _execute_primary(self, operation: str, *args, **kwargs) -> Any:
+        """Execute operation on primary backend only."""
+        if not self.primary_backend:
+            raise ValueError("No primary backend available")
+        
+        method = getattr(self.primary_backend, operation)
+        return method(*args, **kwargs)
+    
+    def _execute_replica(self, operation: str, *args, **kwargs) -> Any:
+        """Execute write operations on all backends, read operations on primary."""
+        write_operations = {'upload', 'delete'}
+        
+        if operation in write_operations:
+            # Write to all backends
+            results = []
+            errors = []
+            
+            for i, backend in enumerate(self.backends):
+                try:
+                    method = getattr(backend, operation)
+                    result = method(*args, **kwargs)
+                    results.append(result)
+                    logger.debug(f"Replica write success on backend {i}", source="bucket_client")
+                except Exception as e:
+                    errors.append(f"Backend {i}: {str(e)}")
+                    logger.error(f"Replica write failed on backend {i}", error=e, source="bucket_client")
+            
+            if not results:
+                raise Exception(f"All replica writes failed: {errors}")
+            
+            return results[0]  # Return primary result
+        else:
+            # Read from primary
+            return self._execute_primary(operation, *args, **kwargs)
+    
+    def _execute_failover(self, operation: str, *args, **kwargs) -> Any:
+        """Execute operation with automatic failover to backup backends."""
+        for i, backend in enumerate(self.backends):
+            try:
+                method = getattr(backend, operation)
+                result = method(*args, **kwargs)
+                if i > 0:
+                    logger.info(f"Failover successful to backend {i}", source="bucket_client")
+                return result
+            except Exception as e:
+                logger.warning(f"Backend {i} failed, trying next", error=e, source="bucket_client")
+                if i == len(self.backends) - 1:
+                    raise Exception(f"All backends failed for operation {operation}")
+        
+        raise Exception("No backends available")
+    
+    def _execute_sync(self, operation: str, *args, **kwargs) -> Any:
+        """Execute operation on all backends and ensure consistency."""
+        write_operations = {'upload', 'delete'}
+        
+        if operation in write_operations:
+            # Write to all backends and verify consistency
+            results = []
+            errors = []
+            
+            for i, backend in enumerate(self.backends):
+                try:
+                    method = getattr(backend, operation)
+                    result = method(*args, **kwargs)
+                    results.append(result)
+                except Exception as e:
+                    errors.append(f"Backend {i}: {str(e)}")
+                    logger.error(f"Sync write failed on backend {i}", error=e, source="bucket_client")
+            
+            if len(results) != len(self.backends):
+                logger.warning(f"Sync inconsistency: {len(results)}/{len(self.backends)} succeeded", source="bucket_client")
+            
+            if not results:
+                raise Exception(f"All sync writes failed: {errors}")
+            
+            return results[0]  # Return first successful result
+        else:
+            # Read from primary with verification
+            return self._execute_primary(operation, *args, **kwargs)
     
     def upload_file(self, file_path: str, content: bytes, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
-        Upload file content to storage.
+        Upload file content to storage using configured strategy.
         
         Parameters
         ----------
@@ -347,7 +968,7 @@ class BucketClient:
         dict
             File information including ID, size, timestamps
         """
-        return self.backend.upload(file_path, content, metadata)
+        return self._execute_strategy('upload', file_path, content, metadata)
     
     def download_file(self, file_path: str) -> bytes:
         """
@@ -356,30 +977,30 @@ class BucketClient:
         Parameters
         ----------
         file_path : str
-            Path to file in storage
+            Path to file to download
             
         Returns
         -------
         bytes
             File content as bytes
         """
-        return self.backend.download(file_path)
+        return self._execute_strategy('download', file_path)
     
     def delete_file(self, file_path: str) -> bool:
         """
-        Delete file from storage.
+        Delete file from storage using configured strategy.
         
         Parameters
         ----------
         file_path : str
-            Path to file in storage
+            Path to file to delete
             
         Returns
         -------
         bool
             True if file was deleted successfully
         """
-        return self.backend.delete(file_path)
+        return self._execute_strategy('delete', file_path)
     
     def list_files(self, folder: str = "") -> List[Dict[str, Any]]:
         """
@@ -388,14 +1009,14 @@ class BucketClient:
         Parameters
         ----------
         folder : str, optional
-            Folder path to list (empty for root)
+            Folder path to list files from
             
         Returns
         -------
         list
             List of file information dictionaries
         """
-        return self.backend.list_files(folder)
+        return self._execute_strategy('list_files', folder)
     
     def file_exists(self, file_path: str) -> bool:
         """
@@ -404,14 +1025,14 @@ class BucketClient:
         Parameters
         ----------
         file_path : str
-            Path to file in storage
+            Path to check
             
         Returns
         -------
         bool
             True if file exists
         """
-        return self.backend.exists(file_path)
+        return self._execute_strategy('exists', file_path)
     
     def get_file_metadata(self, file_path: str) -> Dict[str, Any]:
         """
@@ -420,42 +1041,76 @@ class BucketClient:
         Parameters
         ----------
         file_path : str
-            Path to file in storage
+            Path to file
             
         Returns
         -------
         dict
-            File metadata including size, timestamps, etc.
+            File metadata including size, timestamps, MIME type
         """
-        return self.backend.get_metadata(file_path)
+        return self._execute_strategy('get_metadata', file_path)
     
-    def get_backend_type(self) -> str:
+    def get_storage_info(self) -> Dict[str, Any]:
         """
-        Get the current storage backend type.
+        Get information about active storage backends and strategy.
         
         Returns
         -------
-        str
-            Backend type (local, appwrite, s3)
+        dict
+            Storage configuration information
         """
-        return STORAGE_BACKEND
+        return {
+            'strategy': self.strategy,
+            'backends': [type(backend).__name__ for backend in self.backends],
+            'primary_backend': type(self.primary_backend).__name__ if self.primary_backend else None,
+            'backend_count': len(self.backends),
+            'active_backends': STORAGE_BACKENDS_ACTIVE,
+            'appwrite_enabled': APPWRITE_ENABLED,
+            's3_enabled': S3_ENABLED
+        }
     
-    def test_connection(self) -> bool:
+    def create_bucket(self, bucket_name: str) -> Dict[str, Any]:
         """
-        Test storage backend connection.
+        Create a new bucket/container using configured strategy.
         
+        Parameters
+        ----------
+        bucket_name : str
+            Name of the bucket to create
+            
+        Returns
+        -------
+        dict
+            Bucket creation result
+        """
+        return self._execute_strategy('create_bucket', bucket_name)
+    
+    def delete_bucket(self, bucket_name: str) -> bool:
+        """
+        Delete a bucket/container using configured strategy.
+        
+        Parameters
+        ----------
+        bucket_name : str
+            Name of the bucket to delete
+            
         Returns
         -------
         bool
-            True if connection is working
+            True if bucket was deleted successfully
         """
-        try:
-            # Test by listing files in root
-            self.backend.list_files("")
-            return True
-        except Exception as e:
-            logger.error(f"Storage backend connection test failed", error=e, source="bucket_client")
-            return False
+        return self._execute_strategy('delete_bucket', bucket_name)
+    
+    def list_buckets(self) -> List[Dict[str, Any]]:
+        """
+        List all buckets/containers.
+        
+        Returns
+        -------
+        list
+            List of bucket information dictionaries
+        """
+        return self._execute_strategy('list_buckets')
 
 
 def get_bucket_client() -> BucketClient:

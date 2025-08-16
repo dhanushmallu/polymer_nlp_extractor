@@ -50,7 +50,8 @@ class BucketManager:
         Initialize the BucketManager with a universal storage client.
         """
         self.client = get_bucket_client()
-        logger.info(f"BucketManager initialized with {self.client.get_backend_type()} backend",
+        storage_info = self.client.get_storage_info()
+        logger.info(f"BucketManager initialized with {storage_info['primary_backend']} backend ({storage_info['strategy']} strategy)",
                    source="bucket_manager", event_type="startup")
 
     # === FILE OPERATIONS ===
@@ -332,9 +333,10 @@ class BucketManager:
         Returns
         -------
         str
-            Backend type (local, appwrite, s3).
+            Primary backend type information
         """
-        return self.client.get_backend_type()
+        storage_info = self.client.get_storage_info()
+        return storage_info['primary_backend']
 
     def test_connection(self) -> bool:
         """
