@@ -1,630 +1,1910 @@
-# polymer_extractor/services/setup_service.py
-
 """
-Setup Service for Polymer NLP Extractor.
+polymer_extractor/services/setup_service.py
+
+Setup Service for Polymer NLP Extractor - Complete System Orchestration.
 
 Purpose
 -------
-Database orchestration and lifecycle management service that coordinates operations across
-PostgreSQL and Neo4j backends with flexible storage via BucketClient.
+Production-ready system orchestration service providing comprehensive lifecycle management
+for PostgreSQL, Neo4j, and multi-backend storage with safe initialization, health monitoring,
+and data management operations aligned with server.sh commands.
 
-Features
---------
-- Environment-driven database initialization based on .env configuration
-- Comprehensive lifecycle management (start/stop/restart/reset)
-- Multi-backend health checking and status reporting
-- Granular database reset operations with log preservation options
-- Clean installation workflows with logging system coordination
-- Verbose response patterns for enhanced debugging
-- Integration with BucketClient for flexible storage operations
+Core Operations (Aligned with server.sh)
+----------------------------------------
+System Lifecycle:
+- initialize() -> Safe initialization of missing/corrupted components
+- reset() -> Reset components with data removal but preserve structure
+- clean() -> Clean shutdown with data preservation
+- wipe_data() -> Remove all data while preserving schemas/structure
 
-Environment Variables
----------------------
-Required for setup operations:
-- USE_POSTGRESQL_DB=true/false - Enable/disable PostgreSQL database operations
-- USE_NEO4J_DB=true/false - Enable/disable Neo4j database operations
-- DATA_BACKEND=postgres - Primary backend for structured data (should be postgres)
-- GRAPH_BACKEND=neo4j|disabled - Enable/disable graph operations
-- Storage backend configuration handled by BucketClient
+Health & Monitoring:
+- check_health() -> Comprehensive system health validation
+- get_status() -> Current system status and configuration
+- check_storage_health() -> Multi-backend storage validation
 
-Design Principles
------------------
-1. PostgreSQL + Neo4j focused with flexible storage options
-2. Environment-first configuration respecting user preferences
-3. Verbose response patterns for comprehensive debugging
-4. Non-blocking error handling with detailed error context
-5. Separation of concerns: orchestration vs. direct database operations
-6. Integration with logging system for clean install coordination
-7. Backward compatibility with existing service interfaces
+Component Management:
+- initialize_database() -> PostgreSQL setup and recovery
+- initialize_graph() -> Neo4j setup and recovery  
+- initialize_storage() -> Multi-backend storage setup
+- create_buckets() -> Create standardized storage buckets
+- validate_buckets() -> Validate bucket structure
+
+Bucket Management:
+- create_standard_buckets() -> Create all standard buckets
+- validate_bucket_structure() -> Validate required buckets exist
+- list_all_buckets() -> List buckets across all backends
 
 Examples
 --------
+>>> from polymer_extractor.services.setup_service import SetupService
 >>> setup = SetupService()
->>> result = setup.initialize_system()
->>> print(result["success"])  # True/False
->>> print(result["databases"])  # Detailed per-database results
->>> print(result["errors"])  # Detailed error information if any
+>>> 
+>>> # Initialize missing/corrupted components
+>>> result = setup.initialize()
+>>> print(f"Success: {result['success']}, Components: {list(result['components'].keys())}")
+>>> 
+>>> # Reset system data (preserves structure)
+>>> reset_result = setup.reset(components=['database', 'storage'])
+>>> 
+>>> # Health monitoring
+>>> health = setup.check_health()
+>>> print(f"Overall: {health['overall_status']}, Services: {health['services']}")
+>>> 
+>>> # Wipe all data but keep schemas
+>>> wipe_result = setup.wipe_data(preserve_structure=True)
+
+Notes
+-----
+- Method names aligned with server.sh command structure
+- Consistent parameter patterns across all methods
+- Production-safe defaults with comprehensive validation
+- Environment-driven configuration with graceful degradation
 """
 
 import os
-import time
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Union
-from datetime import datetime
 
 from polymer_extractor.storage.postgresql_client import PostgresClient
 from polymer_extractor.storage.neo4j_client import Neo4jClient
-from polymer_extractor.storage.database_manager import DatabaseManager
-from polymer_extractor.storage.graph_manager import GraphManager
-from polymer_extractor.storage.bucket_client import BucketClient
-from polymer_extractor.utils.logging import Logger
+from polymer_extractor.storage.storage_client import get_storage_client
+from polymer_extractor.storage.storage_manager import get_storage_manager
+from polymer_extractor.utils.logging import get_logger
+from polymer_extractor.utils.paths import (
+    PROJECT_ROOT, WORKSPACE_DIR, PUBLIC_DIR, MODELS_DIR,
+    RAW_INPUT_DIR, EXTRACTED_XML_DIR, PROCESSED_XML_DIR, SAMPLES_DIR,
+    REPORTS_DIR, SYSTEM_LOGS_DIR, DATASETS_DIR, EXPORTS_DIR
+)
 
+logger = get_logger()
 
-logger = Logger()
+# Import models sync service for Phase 2 GitHub sync functionality
+try:
+    from polymer_extractor.services.models_sync_service import ModelsSyncService
+    MODELS_SYNC_AVAILABLE = True
+except ImportError:
+    # Graceful degradation if models sync service not available
+    ModelsSyncService = None
+    MODELS_SYNC_AVAILABLE = False
 
 
 class SetupService:
     """
-    Database orchestration and lifecycle management service.
-    
-    Coordinates operations across PostgreSQL and Neo4j backends with
-    comprehensive error handling and verbose response patterns for debugging.
-    Uses BucketClient for flexible storage operations.
+    Complete system orchestration service aligned with server.sh commands.
+
+    Summary
+    -------
+    Provides production-ready system management operations with method names
+    and behaviors that directly correspond to server.sh commands for consistency.
+
+    Core Methods (server.sh alignment)
+    ----------------------------------
+    initialize() -> Safe initialization of missing/corrupted components
+    reset(components) -> Reset specified components (remove data, keep structure)
+    wipe_data() -> Remove all data while preserving schemas/buckets
+    check_health() -> Comprehensive system health validation  
+    get_status() -> Current system status and configuration
+
+    Component Operations
+    -------------------
+    initialize_database() -> PostgreSQL setup and recovery
+    initialize_graph() -> Neo4j setup and recovery
+    initialize_storage() -> Multi-backend storage setup and bucket creation
+
+    Configuration
+    -------------
+    Environment-driven via USE_POSTGRESQL_DB, USE_NEO4J_DB, STORAGE_BACKEND, etc.
+
+    Examples
+    --------
+    >>> setup = SetupService()
+    >>> result = setup.initialize()  # Safe initialization
+    >>> reset_result = setup.reset(['database', 'storage'])  # Reset specific components
+    >>> health = setup.check_health()  # System health check
     """
 
     def __init__(self):
-        """Initialize setup service with environment-based configuration."""
-        self.logger = Logger()
+        """
+        Initialize SetupService with environment-driven configuration.
         
-        # Initialize clients based on environment flags
+        Summary
+        -------
+        Configures the service based on environment variables for PostgreSQL,
+        Neo4j, and storage backends. Creates client instances only when enabled.
+        
+        Environment Variables
+        --------------------
+        USE_POSTGRESQL_DB : str
+            Enable PostgreSQL operations (true/false)
+        USE_NEO4J_DB : str  
+            Enable Neo4j operations (true/false)
+        STORAGE_BACKEND : str
+            Primary storage backend (local/appwrite/s3)
+        
+        Attributes
+        ----------
+        postgres_enabled : bool
+            Whether PostgreSQL operations are enabled
+        neo4j_enabled : bool
+            Whether Neo4j operations are enabled
+        postgres_client : PostgresClient or None
+            PostgreSQL client instance if enabled
+        neo4j_client : Neo4jClient or None
+            Neo4j client instance if enabled
+        storage_client : StorageClient
+            Storage client for multi-backend operations
+            
+        Notes
+        -----
+        - Clients are initialized lazily to avoid connection issues during import
+        - Graceful degradation when services are disabled
+        - All initialization errors are logged but don't prevent service creation
+        """
+        logger.info("Initializing SetupService", source="setup_service")
+        
+        # Environment configuration
+        self.postgres_enabled = self._should_use_postgres()
+        self.neo4j_enabled = self._should_use_neo4j()
+        self.storage_backend = os.getenv("STORAGE_BACKEND", "local")
+        
+        # Initialize clients
         self.postgres_client = None
         self.neo4j_client = None
-        self.database_manager = None
-        self.graph_manager = None
-        self.bucket_client = None
+        self.storage_client = None
+        self.storage_manager = None
         
-        # Initialize PostgreSQL client if enabled
-        if self._should_use_postgres():
+        try:
+            self.storage_client = get_storage_client()
+            self.storage_manager = get_storage_manager()
+            logger.info("Storage client initialized", source="setup_service", 
+                       backend=self.storage_backend)
+        except Exception as e:
+            logger.error("Failed to initialize storage client", source="setup_service",
+                        error=str(e))
+        
+        if self.postgres_enabled:
             try:
                 self.postgres_client = PostgresClient()
-                self.logger.info("PostgreSQL client initialized", source="setup_service", event_type="initialization")
+                logger.info("PostgreSQL client initialized", source="setup_service")
             except Exception as e:
-                self.logger.warning(f"Failed to initialize PostgreSQL client: {e}", source="setup_service", event_type="initialization")
+                logger.error("Failed to initialize PostgreSQL client", source="setup_service",
+                           error=str(e))
         
-        # Initialize Neo4j client if enabled
-        if self._should_use_neo4j():
+        if self.neo4j_enabled:
             try:
                 self.neo4j_client = Neo4jClient()
-                self.logger.info("Neo4j client initialized", source="setup_service", event_type="initialization")
+                logger.info("Neo4j client initialized", source="setup_service")
             except Exception as e:
-                self.logger.warning(f"Failed to initialize Neo4j client: {e}", source="setup_service", event_type="initialization")
-        
-        # Initialize managers
-        try:
-            self.database_manager = DatabaseManager()
-            self.graph_manager = GraphManager()
-            self.bucket_client = BucketClient()
-            self.logger.info("Managers initialized successfully", source="setup_service", event_type="initialization")
-        except Exception as e:
-            self.logger.warning(f"Failed to initialize managers: {e}", source="setup_service", event_type="initialization")
+                logger.error("Failed to initialize Neo4j client", source="setup_service",
+                           error=str(e))
 
     def _should_use_postgres(self) -> bool:
-        """Check if PostgreSQL should be used based on .env flags."""
-        return (os.getenv("USE_POSTGRESQL_DB", "true").lower() == "true" or
-                os.getenv("DATA_BACKEND", "postgres") == "postgres")
+        """Check if PostgreSQL should be used based on environment."""
+        return os.getenv("USE_POSTGRESQL_DB", "false").lower() == "true"
     
     def _should_use_neo4j(self) -> bool:
-        """Check if Neo4j should be used based on .env flags."""
-        return (os.getenv("USE_NEO4J_DB", "true").lower() == "true" and
-                os.getenv("GRAPH_BACKEND", "neo4j") == "neo4j")
+        """Check if Neo4j should be used based on environment."""
+        return os.getenv("USE_NEO4J_DB", "false").lower() == "true"
+    
+    def _get_protected_buckets(self) -> List[str]:
+        """
+        Get list of bucket names that should be protected from reset/wipe operations.
+        
+        Summary
+        -------
+        Returns buckets containing valuable assets that should not be accidentally
+        deleted during reset or wipe operations. These buckets can still be
+        initialized if they don't exist.
+        
+        Returns
+        -------
+        List[str]
+            List of protected bucket names
+            
+        Notes
+        -----
+        - models: Contains trained models and tokenizers (valuable assets)
+        - system_logs: Contains log files and historical data (important for debugging)
+        - Protected buckets are excluded from reset/wipe but can be initialized
+        - Protected buckets are independent and don't sync with other storage backends
+        """
+        return ["models", "system_logs"]
+    
+    def _create_standard_buckets_with_override(self) -> Dict[str, Any]:
+        """
+        Create standard buckets with override enabled for reset/setup operations.
+        
+        Summary
+        -------
+        Creates standard storage buckets with allow_override=True, intended for
+        reset operations where we want to ensure buckets are properly recreated
+        even if they exist.
+        
+        Returns
+        -------
+        Dict[str, Any]
+            Creation results with same structure as create_standard_buckets()
+            
+        Notes
+        -----
+        - Uses allow_override=True for all bucket creation operations
+        - Intended for reset/destructive operations
+        - Normal setup should use create_standard_buckets() instead
+        """
+        logger.info("Creating standard buckets with override enabled", source="setup_service")
+        
+        result = {
+            "success": True,
+            "buckets_created": [],
+            "buckets_existed": [],
+            "details": ""
+        }
+        
+        if not self.storage_manager:
+            result["success"] = False
+            result["details"] = "Storage manager not available"
+            return result
+        
+        # Standard bucket names (same as create_standard_buckets)
+        standard_buckets = [
+            "raw_inputs_dir",
+            "extracted_xml_dir", 
+            "processed_xml_dir",
+            "samples_dir",
+            "models",
+            "full_reports_dir",
+            "system_logs",
+            "datasets_dir",
+            "exports_dir"
+        ]
+        
+        for bucket_name in standard_buckets:
+            try:
+                # Create bucket with override enabled (for reset operations)
+                bucket_result = self.storage_manager.create_bucket(bucket_name, allow_override=True)
+                action = bucket_result.get("action", "created")
+                
+                if action == "created":
+                    result["buckets_created"].append(bucket_name)
+                    logger.info(f"Bucket created with override", source="setup_service", bucket=bucket_name)
+                elif action == "skipped":
+                    result["buckets_existed"].append(bucket_name)
+                    logger.info(f"Bucket already existed", source="setup_service", bucket=bucket_name)
+                else:  # updated
+                    result["buckets_created"].append(bucket_name)
+                    logger.info(f"Bucket recreated with override", source="setup_service", bucket=bucket_name)
+                    
+            except Exception as e:
+                result["details"] += f"Error creating bucket {bucket_name}: {str(e)}; "
+                logger.error(f"Bucket creation with override failed", source="setup_service",
+                           bucket=bucket_name, error=str(e))
+                result["success"] = False
+        
+        # Update details
+        total_created = len(result["buckets_created"])
+        total_existed = len(result["buckets_existed"])
+        
+        if self.storage_manager:
+            strategy_info = self.storage_manager.get_strategy_info()
+            result["details"] += f"Bucket setup completed with override: {total_created} created, {total_existed} existed (total: {total_created + total_existed}). "
+            result["details"] += f"Operations affected all {strategy_info['backend_count']} backends ({', '.join(strategy_info['backend_types'])}); "
+        
+        logger.info("Standard buckets creation with override completed", source="setup_service",
+                   created=total_created, existed=total_existed, success=result["success"])
+        
+        return result
+    
+    def _get_storage_impact_summary(self) -> Dict[str, Any]:
+        """Get summary of how operations will impact storage backends."""
+        impact = {
+            "manager_available": False,
+            "strategy": "unknown",
+            "backend_count": 0,
+            "backend_types": [],
+            "affects_all_backends": False,
+            "summary": "Storage manager not available"
+        }
+        
+        if self.storage_manager:
+            try:
+                strategy_info = self.storage_manager.get_strategy_info()
+                impact.update({
+                    "manager_available": True,
+                    "strategy": strategy_info['strategy'],
+                    "backend_count": strategy_info['backend_count'],
+                    "backend_types": strategy_info['backend_types'],
+                    "affects_all_backends": strategy_info['affects_all_backends'],
+                    "summary": f"Strategy '{strategy_info['strategy']}' with {strategy_info['backend_count']} backends ({', '.join(strategy_info['backend_types'])})"
+                })
+                
+                if strategy_info['affects_all_backends']:
+                    impact["summary"] += " - operations affect ALL backends"
+                else:
+                    impact["summary"] += " - operations affect primary backend only"
+                    
+            except Exception as e:
+                impact["summary"] = f"Error getting storage info: {str(e)}"
+                
+        return impact
 
     def get_environment_info(self) -> Dict[str, Any]:
-        """Get current environment configuration information."""
-        return {
-            "timestamp": datetime.now().isoformat(),
-            "environment_flags": {
-                "use_postgresql": self._should_use_postgres(),
-                "use_neo4j": self._should_use_neo4j(),
-                "data_backend": os.getenv("DATA_BACKEND", "postgres"),
-                "graph_backend": os.getenv("GRAPH_BACKEND", "neo4j"),
-                "storage_backend": os.getenv("STORAGE_BACKEND", "local")
-            },
-            "client_status": {
-                "postgres_client": self.postgres_client is not None,
-                "neo4j_client": self.neo4j_client is not None,
-                "database_manager": self.database_manager is not None,
-                "graph_manager": self.graph_manager is not None,
-                "bucket_client": self.bucket_client is not None
+        """
+        Get comprehensive environment configuration information.
+        
+        Summary
+        -------
+        Returns detailed information about the current environment configuration
+        including enabled services, storage backends, and key paths.
+        
+        Returns
+        -------
+        Dict[str, Any]
+            Environment configuration details with structure:
+            {
+                "postgres_enabled": bool,
+                "neo4j_enabled": bool, 
+                "storage_backend": str,
+                "workspace_dir": str,
+                "public_dir": str,
+                "models_dir": str,
+                "storage_backends_active": List[str]
             }
+            
+        Examples
+        --------
+        >>> setup = SetupService()
+        >>> env_info = setup.get_environment_info()
+        >>> print(f"PostgreSQL: {env_info['postgres_enabled']}")
+        >>> print(f"Storage: {env_info['storage_backend']}")
+        
+        Notes
+        -----
+        - Always returns current environment state
+        - Safe to call even if services are not initialized
+        - Useful for debugging configuration issues
+        """
+        logger.debug("Getting environment information", source="setup_service")
+        
+        return {
+            "postgres_enabled": self.postgres_enabled,
+            "neo4j_enabled": self.neo4j_enabled,
+            "storage_backend": self.storage_backend,
+            "storage_backends_active": os.getenv("STORAGE_BACKENDS_ACTIVE", "local").split(","),
+            "workspace_dir": WORKSPACE_DIR,
+            "public_dir": PUBLIC_DIR,
+            "models_dir": MODELS_DIR,
+            "project_root": PROJECT_ROOT,
+            "timestamp": datetime.utcnow().isoformat()
         }
 
-    def initialize_system(self, clean_install: bool = False) -> Dict[str, Any]:
+    def initialize(self, clean_install: bool = False, preserve_logs: bool = True, admin_user: Optional[str] = None, force_model_sync: bool = False, **kwargs) -> Dict[str, Any]:
         """
-        Initialize the complete system with all databases.
+        Safe initialization of missing or corrupted system components.
+        
+        Summary
+        -------
+        Performs comprehensive system initialization by checking each component
+        and initializing only those that are missing or corrupted. Safe to run
+        multiple times without affecting existing data.
         
         Parameters
         ----------
-        clean_install : bool
-            If True, performs clean installation (drops existing data)
+        clean_install : bool, optional
+            If True, recreate all components even if they exist (default: False)
+        preserve_logs : bool, optional
+            If True, preserve existing logs during initialization (default: True)
+        admin_user : Optional[str], optional
+            Admin user context for initialization (default: None)
+        force_model_sync : bool, optional
+            Force model synchronization during initialization (default: False)
+        **kwargs
+            Additional parameters for forward compatibility
             
         Returns
         -------
-        dict
-            Comprehensive system initialization results
-        """
-        start_time = time.time()
+        Dict[str, Any]
+            Initialization results with structure:
+            {
+                "success": bool,
+                "components": {
+                    "database": {"initialized": bool, "details": str},
+                    "graph": {"initialized": bool, "details": str},
+                    "storage": {"initialized": bool, "details": str}
+                },
+                "warnings": List[str],
+                "duration_seconds": float
+            }
+            
+        Examples
+        --------
+        >>> setup = SetupService()
+        >>> result = setup.initialize()
+        >>> if result["success"]:
+        ...     print("System initialized successfully")
+        ... else:
+        ...     print(f"Issues: {result['warnings']}")
         
-        # Pause logging database operations for clean install
-        if clean_install and self.logger:
-            self.logger.pause_database_logging()
+        Notes
+        -----
+        - Safe to run multiple times - only initializes missing components
+        - Creates directory structure if missing
+        - Validates existing components before initializing
+        - Comprehensive error handling with detailed feedback
+        """
+        start_time = datetime.utcnow()
+        logger.info("Starting system initialization", source="setup_service",
+                   clean_install=clean_install, preserve_logs=preserve_logs, 
+                   admin_user=admin_user, force_model_sync=force_model_sync)
+        
+        # Get storage impact summary for better visibility
+        storage_impact = self._get_storage_impact_summary()
+        logger.info("Storage configuration for initialization", source="setup_service",
+                   storage_impact=storage_impact["summary"])
         
         result = {
-            "success": False,
-            "timestamp": datetime.now().isoformat(),
-            "clean_install": clean_install,
-            "databases": {},
-            "storage": {},
-            "total_duration": 0,
-            "errors": [],
-            "warnings": []
+            "success": True,
+            "components": {},
+            "warnings": [],
+            "duration_seconds": 0.0,
+            "storage_impact": storage_impact
         }
         
         try:
-            # Initialize PostgreSQL if enabled
-            if self._should_use_postgres():
-                postgres_result = self.setup_postgresql_database(clean_install=clean_install)
-                result["databases"]["postgresql"] = postgres_result
-                if not postgres_result.get("success", False):
-                    result["errors"].append(f"PostgreSQL initialization failed: {postgres_result.get('error', 'Unknown error')}")
-            
-            # Initialize Neo4j if enabled
-            if self._should_use_neo4j():
-                neo4j_result = self.setup_neo4j_database(clean_install=clean_install)
-                result["databases"]["neo4j"] = neo4j_result
-                if not neo4j_result.get("success", False):
-                    result["errors"].append(f"Neo4j initialization failed: {neo4j_result.get('error', 'Unknown error')}")
-            
-            # Initialize storage
-            storage_result = self.setup_storage_system()
-            result["storage"] = storage_result
+            # Initialize storage first (directories and buckets)
+            storage_result = self.initialize_storage(clean_install=clean_install)
+            result["components"]["storage"] = storage_result
             if not storage_result.get("success", False):
-                result["warnings"].append(f"Storage initialization had issues: {storage_result.get('error', 'Unknown error')}")
+                result["warnings"].append("Storage initialization had issues")
             
-            # Resume logging database operations
-            if clean_install and self.logger:
-                self.logger.resume_database_logging()
-                self.logger.initialize_database_table()
-            
-            # Check overall success
-            database_success = all(
-                db_result.get("success", False) 
-                for db_result in result["databases"].values()
-            )
-            
-            result["success"] = database_success and not result["errors"]
-            result["total_duration"] = time.time() - start_time
-            
-            self.logger.info(
-                f"System initialization {'completed successfully' if result['success'] else 'completed with errors'}",
-                source="setup_service", 
-                event_type="system_initialization",
-                duration=result["total_duration"],
-                clean_install=clean_install
-            )
-            
-            return result
-            
-        except Exception as e:
-            result["success"] = False
-            result["errors"].append(f"System initialization failed: {str(e)}")
-            result["total_duration"] = time.time() - start_time
-            
-            # Resume logging even on failure
-            if clean_install and self.logger:
-                self.logger.resume_database_logging()
-            
-            self.logger.error(
-                f"System initialization failed: {str(e)}", 
-                source="setup_service", 
-                event_type="system_initialization"
-            )
-            return result
-
-    def setup_postgresql_database(self, clean_install: bool = False) -> Dict[str, Any]:
-        """
-        Setup PostgreSQL database with comprehensive schema creation.
-        
-        Parameters
-        ----------
-        clean_install : bool
-            If True, drops existing tables before creating new ones
-            
-        Returns
-        -------
-        dict
-            PostgreSQL setup results
-        """
-        start_time = time.time()
-        
-        result = {
-            "success": False,
-            "timestamp": datetime.now().isoformat(),
-            "clean_install": clean_install,
-            "tables_created": [],
-            "duration": 0,
-            "error": None
-        }
-        
-        if not self.postgres_client:
-            result["error"] = "PostgreSQL client not available"
-            return result
-        
-        try:
-            # Test connection
-            if not self.postgres_client.test_connection():
-                result["error"] = "PostgreSQL connection test failed"
-                return result
-            
-            # Execute schema from SQL file
-            schema_file = Path(__file__).parent.parent.parent / "db" / "sql" / "001_core.sql"
-            
-            if schema_file.exists():
-                with open(schema_file, 'r') as f:
-                    schema_sql = f.read()
-                
-                # Execute the schema
-                self.postgres_client.execute_sql_script(schema_sql)
-                
-                # Get list of created tables
-                tables = self.postgres_client.list_tables()
-                result["tables_created"] = tables
-                
-                self.logger.info(
-                    f"PostgreSQL schema executed successfully. Created {len(tables)} tables",
-                    source="setup_service",
-                    event_type="postgresql_setup",
-                    tables_count=len(tables)
-                )
-                
+            # Initialize database if enabled
+            if self.postgres_enabled:
+                db_result = self.initialize_database(clean_install=clean_install, 
+                                                   preserve_logs=preserve_logs)
+                result["components"]["database"] = db_result
+                if not db_result.get("success", False):
+                    result["warnings"].append("Database initialization had issues")
             else:
-                result["error"] = f"Schema file not found: {schema_file}"
-                return result
+                result["components"]["database"] = {
+                    "initialized": False,
+                    "details": "PostgreSQL disabled in environment"
+                }
             
-            result["success"] = True
-            result["duration"] = time.time() - start_time
+            # Initialize graph database if enabled
+            if self.neo4j_enabled:
+                graph_result = self.initialize_graph(clean_install=clean_install)
+                result["components"]["graph"] = graph_result
+                if not graph_result.get("success", False):
+                    result["warnings"].append("Graph database initialization had issues")
+            else:
+                result["components"]["graph"] = {
+                    "initialized": False,
+                    "details": "Neo4j disabled in environment"
+                }
             
-            return result
+            # Initialize models sync if requested and available (Phase 2 enhancement)
+            if force_model_sync and MODELS_SYNC_AVAILABLE:
+                try:
+                    models_sync_service = ModelsSyncService(logger=logger)
+                    models_result = models_sync_service.sync_models_from_github(force_redownload=clean_install)
+                    result["components"]["models_sync"] = {
+                        "initialized": models_result["success"],
+                        "details": f"Models synced: {models_result['models_synced']}, Tokenizers synced: {models_result['tokenizers_synced']}",
+                        "success": models_result["success"],
+                        "models_synced": models_result["models_synced"],
+                        "tokenizers_synced": models_result["tokenizers_synced"],
+                        "version_validated": models_result["version_validated"]
+                    }
+                    if not models_result["success"]:
+                        result["warnings"].append("Models sync had issues")
+                        result["warnings"].extend(models_result.get("errors", []))
+                except Exception as e:
+                    logger.error("Models sync failed during initialization", source="setup_service", error=str(e))
+                    result["components"]["models_sync"] = {
+                        "initialized": False,
+                        "details": f"Models sync error: {str(e)}",
+                        "success": False
+                    }
+                    result["warnings"].append(f"Models sync failed: {str(e)}")
+            elif force_model_sync and not MODELS_SYNC_AVAILABLE:
+                result["components"]["models_sync"] = {
+                    "initialized": False,
+                    "details": "Models sync service not available",
+                    "success": False
+                }
+                result["warnings"].append("Models sync requested but service not available")
+            else:
+                result["components"]["models_sync"] = {
+                    "initialized": False,
+                    "details": "Models sync not requested",
+                    "success": True  # Not a failure if not requested
+                }
             
-        except Exception as e:
-            result["error"] = str(e)
-            result["duration"] = time.time() - start_time
-            
-            self.logger.error(
-                f"PostgreSQL setup failed: {str(e)}", 
-                source="setup_service", 
-                event_type="postgresql_setup"
-            )
-            return result
-
-    def setup_neo4j_database(self, clean_install: bool = False) -> Dict[str, Any]:
-        """
-        Setup Neo4j database with constraints and indexes.
-        
-        Parameters
-        ----------
-        clean_install : bool
-            If True, clears existing data before setup
-            
-        Returns
-        -------
-        dict
-            Neo4j setup results
-        """
-        start_time = time.time()
-        
-        result = {
-            "success": False,
-            "timestamp": datetime.now().isoformat(),
-            "clean_install": clean_install,
-            "constraints_created": [],
-            "indexes_created": [],
-            "duration": 0,
-            "error": None
-        }
-        
-        if not self.neo4j_client:
-            result["error"] = "Neo4j client not available"
-            return result
-        
-        try:
-            # Test connection
-            if not self.neo4j_client.test_connection():
-                result["error"] = "Neo4j connection test failed"
-                return result
-            
-            # Clear database if clean install
-            if clean_install:
-                self.neo4j_client.clear_database()
-                self.logger.info("Neo4j database cleared for clean install", source="setup_service", event_type="neo4j_setup")
-            
-            # Create constraints and indexes
-            constraints_file = Path(__file__).parent.parent.parent / "kg" / "cypher" / "001_constraints.cypher"
-            
-            if constraints_file.exists():
-                with open(constraints_file, 'r') as f:
-                    constraints_cypher = f.read()
-                
-                # Execute constraints (this would need to be implemented in neo4j_client)
-                # For now, we'll create basic constraints
-                basic_constraints = [
-                    "CREATE CONSTRAINT polymer_name IF NOT EXISTS FOR (p:POLYMER) REQUIRE p.name IS UNIQUE",
-                    "CREATE CONSTRAINT property_name IF NOT EXISTS FOR (pr:PROPERTY) REQUIRE pr.name IS UNIQUE",
-                    "CREATE INDEX polymer_canonical IF NOT EXISTS FOR (p:POLYMER) ON (p.canonical_name)",
-                    "CREATE INDEX property_type IF NOT EXISTS FOR (pr:PROPERTY) ON (pr.type)"
-                ]
-                
-                for constraint in basic_constraints:
-                    try:
-                        self.neo4j_client.execute_query(constraint)
-                        if "CONSTRAINT" in constraint:
-                            result["constraints_created"].append(constraint)
-                        else:
-                            result["indexes_created"].append(constraint)
-                    except Exception as e:
-                        self.logger.warning(f"Failed to create constraint/index: {e}", source="setup_service")
-                
-                self.logger.info(
-                    f"Neo4j setup completed. Created {len(result['constraints_created'])} constraints and {len(result['indexes_created'])} indexes",
-                    source="setup_service",
-                    event_type="neo4j_setup"
-                )
-            
-            result["success"] = True
-            result["duration"] = time.time() - start_time
-            
-            return result
-            
-        except Exception as e:
-            result["error"] = str(e)
-            result["duration"] = time.time() - start_time
-            
-            self.logger.error(
-                f"Neo4j setup failed: {str(e)}", 
-                source="setup_service", 
-                event_type="neo4j_setup"
-            )
-            return result
-
-    def setup_storage_system(self) -> Dict[str, Any]:
-        """
-        Setup storage system using BucketClient.
-        
-        Returns
-        -------
-        dict
-            Storage setup results
-        """
-        start_time = time.time()
-        
-        result = {
-            "success": False,
-            "timestamp": datetime.now().isoformat(),
-            "backend": "unknown",
-            "buckets_created": [],
-            "duration": 0,
-            "error": None
-        }
-        
-        if not self.bucket_client:
-            result["error"] = "BucketClient not available"
-            return result
-        
-        try:
-            # Get storage backend info
-            result["backend"] = self.bucket_client.get_backend_type()
-            
-            # Create essential buckets
-            essential_buckets = [
-                "research_papers",
-                "processed_xml", 
-                "extracted_xml",
-                "models",
-                "exports",
-                "system_logs"
+            # Check if any critical component failed
+            critical_failures = [
+                comp for comp_name, comp in result["components"].items()
+                if not comp.get("success", False) and comp.get("initialized", False)
             ]
             
-            for bucket_name in essential_buckets:
-                try:
-                    if not self.bucket_client.bucket_exists(bucket_name):
-                        bucket_result = self.bucket_client.create_bucket(bucket_name)
-                        result["buckets_created"].append(bucket_name)
-                        self.logger.debug(f"Created bucket: {bucket_name}", source="setup_service")
-                    else:
-                        self.logger.debug(f"Bucket already exists: {bucket_name}", source="setup_service")
-                except Exception as e:
-                    self.logger.warning(f"Failed to create bucket {bucket_name}: {e}", source="setup_service")
-            
-            result["success"] = True
-            result["duration"] = time.time() - start_time
-            
-            self.logger.info(
-                f"Storage system setup completed using {result['backend']} backend",
-                source="setup_service",
-                event_type="storage_setup",
-                buckets_created=len(result["buckets_created"])
-            )
-            
-            return result
+            if critical_failures:
+                result["success"] = False
+                result["warnings"].append(f"Critical components failed: {len(critical_failures)}")
             
         except Exception as e:
-            result["error"] = str(e)
-            result["duration"] = time.time() - start_time
-            
-            self.logger.error(
-                f"Storage setup failed: {str(e)}", 
-                source="setup_service", 
-                event_type="storage_setup"
-            )
-            return result
+            logger.error("System initialization failed", source="setup_service", error=str(e))
+            result["success"] = False
+            result["warnings"].append(f"Initialization error: {str(e)}")
+        
+        # Calculate duration
+        end_time = datetime.utcnow()
+        result["duration_seconds"] = (end_time - start_time).total_seconds()
+        
+        logger.info("System initialization completed", source="setup_service",
+                   success=result["success"], warnings_count=len(result["warnings"]),
+                   duration=result["duration_seconds"])
+        
+        return result
 
-    def check_system_health(self) -> Dict[str, Any]:
+    def initialize_database(self, clean_install: bool = False, preserve_logs: bool = True) -> Dict[str, Any]:
         """
-        Comprehensive system health check.
+        Initialize PostgreSQL database with essential tables and indexes.
+        
+        Summary
+        -------
+        Sets up PostgreSQL database infrastructure including core tables for
+        metadata storage, paper management, and system operations. Creates
+        indexes for performance and constraints for data integrity.
+        
+        Parameters
+        ----------
+        clean_install : bool, optional
+            If True, drop and recreate all tables (default: False)
+        preserve_logs : bool, optional
+            If True, preserve existing logs during reset (default: True)
+            
+        Returns
+        -------
+        Dict[str, Any]
+            Database initialization results with structure:
+            {
+                "success": bool,
+                "initialized": bool,
+                "tables_created": List[str],
+                "indexes_created": List[str],
+                "details": str,
+                "health_check": Dict[str, Any]
+            }
+            
+        Raises
+        ------
+        Exception
+            If PostgreSQL is disabled or client initialization failed
+            
+        Examples
+        --------
+        >>> setup = SetupService()
+        >>> result = setup.initialize_database()
+        >>> print(f"Tables: {result['tables_created']}")
+        >>> print(f"Health: {result['health_check']['status']}")
+        
+        Notes
+        -----
+        - Creates essential tables: datasets_metadata, extraction_metadata, models_metadata
+        - system_logs table creation/management is handled by logging.py to avoid conflicts
+        - Never drops system_logs table during clean_install to prevent database locks
+        - Adds performance indexes for common query patterns
+        - Validates database connection before proceeding
+        - Safe to run multiple times - uses CREATE IF NOT EXISTS
+        """
+        logger.info("Initializing PostgreSQL database", source="setup_service",
+                   clean_install=clean_install)
+        
+        if not self.postgres_enabled:
+            raise Exception("PostgreSQL is disabled in environment (USE_POSTGRESQL_DB=false)")
+        
+        if not self.postgres_client:
+            raise Exception("PostgreSQL client not initialized")
+        
+        result = {
+            "success": False,
+            "initialized": False,
+            "tables_created": [],
+            "indexes_created": [],
+            "details": "",
+            "health_check": {}
+        }
+        
+        try:
+            # Check database health first
+            health = self.postgres_client.health_check()
+            result["health_check"] = health
+            
+            if not health.get("ok", False):
+                result["details"] = f"Database health check failed: {health.get('error', 'Unknown')}"
+                return result
+            
+            # Core metadata tables
+            # NOTE: system_logs table creation delegated to logging.py to avoid conflicts
+            core_tables = [
+                ("datasets_metadata", """
+                    CREATE TABLE IF NOT EXISTS datasets_metadata (
+                        id SERIAL PRIMARY KEY,
+                        name VARCHAR(255) NOT NULL UNIQUE,
+                        description TEXT,
+                        file_path VARCHAR(500),
+                        format VARCHAR(50),
+                        size_bytes BIGINT,
+                        record_count INTEGER,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        metadata JSONB,
+                        tags TEXT[]
+                    )
+                """),
+                ("extraction_metadata", """
+                    CREATE TABLE IF NOT EXISTS extraction_metadata (
+                        id SERIAL PRIMARY KEY,
+                        source_file VARCHAR(500) NOT NULL,
+                        extraction_type VARCHAR(100),
+                        status VARCHAR(50) DEFAULT 'pending',
+                        started_at TIMESTAMP,
+                        completed_at TIMESTAMP,
+                        error_message TEXT,
+                        extracted_entities INTEGER DEFAULT 0,
+                        output_file VARCHAR(500),
+                        processing_time_seconds REAL,
+                        metadata JSONB,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """),
+                ("models_metadata", """
+                    CREATE TABLE IF NOT EXISTS models_metadata (
+                        id SERIAL PRIMARY KEY,
+                        name VARCHAR(255) NOT NULL UNIQUE,
+                        model_type VARCHAR(100),
+                        version VARCHAR(50),
+                        file_path VARCHAR(500),
+                        size_bytes BIGINT,
+                        accuracy REAL,
+                        f1_score REAL,
+                        precision_score REAL,
+                        recall_score REAL,
+                        training_data_path VARCHAR(500),
+                        hyperparameters JSONB,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        metadata JSONB
+                    )
+                """)
+            ]
+            
+            # Ensure system_logs table exists (delegated to logging.py)
+            try:
+                # Use the logging system to ensure its table exists
+                logger.initialize_database_table()
+                logger.info("Ensured system_logs table exists via logging.py", source="setup_service")
+            except Exception as e:
+                logger.warning("Could not initialize system_logs via logging.py", source="setup_service", error=str(e))
+            
+            # Create tables
+            for table_name, create_sql in core_tables:
+                try:
+                    if clean_install:
+                        # Drop table if clean install, but NEVER drop system_logs (handled by logging.py)
+                        if table_name != "system_logs":
+                            self.postgres_client.run(f"DROP TABLE IF EXISTS {table_name} CASCADE")
+                            logger.info(f"Dropped table for clean install", source="setup_service",
+                                       table=table_name)
+                        else:
+                            logger.info(f"Skipping system_logs table drop - managed by logging.py", 
+                                       source="setup_service", table=table_name)
+                    
+                    self.postgres_client.run(create_sql)
+                    result["tables_created"].append(table_name)
+                    logger.info(f"Created table", source="setup_service", table=table_name)
+                    
+                except Exception as e:
+                    logger.error(f"Failed to create table {table_name}", source="setup_service",
+                               error=str(e))
+                    result["details"] += f"Table {table_name} error: {str(e)}; "
+            
+            # Create indexes for performance (excluding system_logs - managed by logging.py)
+            indexes = [
+                ("idx_datasets_name", "CREATE INDEX IF NOT EXISTS idx_datasets_name ON datasets_metadata(name)"),
+                ("idx_extraction_source", "CREATE INDEX IF NOT EXISTS idx_extraction_source ON extraction_metadata(source_file)"),
+                ("idx_extraction_status", "CREATE INDEX IF NOT EXISTS idx_extraction_status ON extraction_metadata(status)"),
+                ("idx_models_name", "CREATE INDEX IF NOT EXISTS idx_models_name ON models_metadata(name)"),
+                ("idx_models_type", "CREATE INDEX IF NOT EXISTS idx_models_type ON models_metadata(model_type)")
+            ]
+            
+            for index_name, create_sql in indexes:
+                try:
+                    self.postgres_client.run(create_sql)
+                    result["indexes_created"].append(index_name)
+                    logger.debug(f"Created index", source="setup_service", index=index_name)
+                except Exception as e:
+                    logger.warning(f"Failed to create index {index_name}", source="setup_service",
+                                 error=str(e))
+            
+            result["success"] = True
+            result["initialized"] = True
+            result["details"] = f"Database initialized with {len(result['tables_created'])} tables and {len(result['indexes_created'])} indexes"
+            
+        except Exception as e:
+            logger.error("Database initialization failed", source="setup_service", error=str(e))
+            result["details"] = f"Database initialization error: {str(e)}"
+        
+        return result
+
+    def initialize_graph(self, clean_install: bool = False) -> Dict[str, Any]:
+        """
+        Initialize Neo4j graph database with constraints and indexes.
+        
+        Summary
+        -------
+        Sets up Neo4j graph database infrastructure including constraints for
+        data integrity and indexes for query performance. Creates the foundation
+        for polymer science knowledge graph operations.
+        
+        Parameters
+        ----------
+        clean_install : bool, optional
+            If True, drop existing constraints and recreate (default: False)
+            
+        Returns
+        -------
+        Dict[str, Any]
+            Graph initialization results with structure:
+            {
+                "success": bool,
+                "initialized": bool,
+                "constraints_created": List[str],
+                "indexes_created": List[str],
+                "details": str,
+                "health_check": Dict[str, Any]
+            }
+            
+        Raises
+        ------
+        Exception
+            If Neo4j is disabled or client initialization failed
+            
+        Examples
+        --------
+        >>> setup = SetupService()
+        >>> result = setup.initialize_graph()
+        >>> print(f"Constraints: {result['constraints_created']}")
+        >>> print(f"Health: {result['health_check']['status']}")
+        
+        Notes
+        -----
+        - Creates uniqueness constraints for Paper.doi, Polymer.name
+        - Adds performance indexes for common graph traversal patterns
+        - Validates graph database connection before proceeding
+        - Safe to run multiple times - uses IF NOT EXISTS where possible
+        """
+        logger.info("Initializing Neo4j graph database", source="setup_service",
+                   clean_install=clean_install)
+        
+        if not self.neo4j_enabled:
+            raise Exception("Neo4j is disabled in environment (USE_NEO4J_DB=false)")
+        
+        if not self.neo4j_client:
+            raise Exception("Neo4j client not initialized")
+        
+        result = {
+            "success": False,
+            "initialized": False,
+            "constraints_created": [],
+            "indexes_created": [],
+            "details": "",
+            "health_check": {}
+        }
+        
+        try:
+            # Check graph database health
+            health = self.neo4j_client.health_check()
+            result["health_check"] = health
+            
+            if not health.get("ok", False):
+                result["details"] = f"Graph database health check failed: {health.get('error', 'Unknown')}"
+                return result
+            
+            # Create constraints for data integrity
+            constraints = [
+                ("Paper_doi", "CREATE CONSTRAINT paper_doi_unique IF NOT EXISTS FOR (p:Paper) REQUIRE p.doi IS UNIQUE"),
+                ("Polymer_name", "CREATE CONSTRAINT polymer_name_unique IF NOT EXISTS FOR (p:Polymer) REQUIRE p.name IS UNIQUE"),
+                ("Author_orcid", "CREATE CONSTRAINT author_orcid_unique IF NOT EXISTS FOR (a:Author) REQUIRE a.orcid IS UNIQUE"),
+                ("Property_name", "CREATE CONSTRAINT property_name_unique IF NOT EXISTS FOR (p:Property) REQUIRE p.name IS UNIQUE")
+            ]
+            
+            if clean_install:
+                # Drop existing constraints for clean install
+                try:
+                    existing_constraints = self.neo4j_client.run(
+                        "SHOW CONSTRAINTS YIELD name", fetch="all"
+                    )
+                    for constraint in existing_constraints:
+                        constraint_name = constraint.get("name", "")
+                        if any(c[0].lower() in constraint_name.lower() for c in constraints):
+                            self.neo4j_client.run(f"DROP CONSTRAINT {constraint_name} IF EXISTS")
+                            logger.info(f"Dropped constraint for clean install", 
+                                       source="setup_service", constraint=constraint_name)
+                except Exception as e:
+                    logger.warning("Failed to drop existing constraints", source="setup_service",
+                                 error=str(e))
+            
+            # Create constraints
+            for constraint_name, create_sql in constraints:
+                try:
+                    self.neo4j_client.run(create_sql)
+                    result["constraints_created"].append(constraint_name)
+                    logger.info(f"Created constraint", source="setup_service", 
+                               constraint=constraint_name)
+                except Exception as e:
+                    logger.warning(f"Failed to create constraint {constraint_name}", 
+                                 source="setup_service", error=str(e))
+                    result["details"] += f"Constraint {constraint_name} error: {str(e)}; "
+            
+            # Create indexes for performance
+            indexes = [
+                ("paper_title", "CREATE INDEX paper_title_index IF NOT EXISTS FOR (p:Paper) ON (p.title)"),
+                ("polymer_type", "CREATE INDEX polymer_type_index IF NOT EXISTS FOR (p:Polymer) ON (p.type)"),
+                ("author_name", "CREATE INDEX author_name_index IF NOT EXISTS FOR (a:Author) ON (a.name)"),
+                ("property_value", "CREATE INDEX property_value_index IF NOT EXISTS FOR (p:Property) ON (p.value)")
+            ]
+            
+            for index_name, create_sql in indexes:
+                try:
+                    self.neo4j_client.run(create_sql)
+                    result["indexes_created"].append(index_name)
+                    logger.debug(f"Created index", source="setup_service", index=index_name)
+                except Exception as e:
+                    logger.warning(f"Failed to create index {index_name}", source="setup_service",
+                                 error=str(e))
+            
+            result["success"] = True
+            result["initialized"] = True
+            result["details"] = f"Graph database initialized with {len(result['constraints_created'])} constraints and {len(result['indexes_created'])} indexes"
+            
+        except Exception as e:
+            logger.error("Graph database initialization failed", source="setup_service", error=str(e))
+            result["details"] = f"Graph database initialization error: {str(e)}"
+        
+        return result
+
+    def initialize_storage(self, clean_install: bool = False) -> Dict[str, Any]:
+        """
+        Initialize storage backend with directory structure and buckets.
+        
+        Summary
+        -------
+        Creates the complete directory structure for the polymer extractor and
+        initializes storage buckets across all configured backends. Ensures
+        all required directories exist for data processing pipelines.
+        
+        Parameters
+        ----------
+        clean_install : bool, optional
+            If True, recreate directory structure (default: False)
+            
+        Returns
+        -------
+        Dict[str, Any]
+            Storage initialization results with structure:
+            {
+                "success": bool,
+                "directories_created": List[str],
+                "buckets_created": List[str],
+                "details": str,
+                "storage_health": Dict[str, Any]
+            }
+            
+        Examples
+        --------
+        >>> setup = SetupService()
+        >>> result = setup.initialize_storage()
+        >>> print(f"Directories: {result['directories_created']}")
+        >>> print(f"Buckets: {result['buckets_created']}")
+        
+        Notes
+        -----
+        - Creates workspace directory structure under PUBLIC_DIR
+        - Initializes storage buckets for all active backends
+        - Validates storage client connectivity
+        - Safe to run multiple times - only creates missing directories
+        """
+        logger.info("Initializing storage infrastructure", source="setup_service",
+                   clean_install=clean_install)
+        
+        result = {
+            "success": False,
+            "directories_created": [],
+            "buckets_created": [],
+            "details": "",
+            "storage_health": {}
+        }
+        
+        try:
+            # Check storage health if client available
+            if self.storage_client:
+                try:
+                    # Basic connectivity test - fix parameter issue
+                    test_result = self.storage_client.list_resources("")
+                    result["storage_health"] = {"status": "healthy", "backend": self.storage_backend}
+                except Exception as e:
+                    result["storage_health"] = {"status": "unhealthy", "error": str(e)}
+            
+            # Create directory structure
+            required_directories = [
+                WORKSPACE_DIR,
+                PUBLIC_DIR,
+                RAW_INPUT_DIR,
+                EXTRACTED_XML_DIR,
+                PROCESSED_XML_DIR,
+                SAMPLES_DIR,
+                MODELS_DIR,
+                REPORTS_DIR,
+                SYSTEM_LOGS_DIR,
+                DATASETS_DIR,
+                EXPORTS_DIR,
+                os.path.join(DATASETS_DIR, "training"),
+                os.path.join(DATASETS_DIR, "testing"),
+                os.path.join(MODELS_DIR, "tokenizers")
+            ]
+            
+            for directory in required_directories:
+                try:
+                    dir_path = Path(directory)
+                    if clean_install and dir_path.exists():
+                        # For clean install, we don't remove directories (too dangerous)
+                        # Instead just ensure they exist
+                        pass
+                    
+                    if not dir_path.exists():
+                        dir_path.mkdir(parents=True, exist_ok=True)
+                        result["directories_created"].append(str(directory))
+                        logger.debug(f"Created directory", source="setup_service", 
+                                   directory=directory)
+                    
+                except Exception as e:
+                    logger.error(f"Failed to create directory {directory}", 
+                               source="setup_service", error=str(e))
+                    result["details"] += f"Directory {directory} error: {str(e)}; "
+            
+            # Create storage buckets if storage client available
+            if self.storage_manager:
+                # For clean install, delete and recreate all buckets
+                if clean_install:
+                    try:
+                        # Get strategy info to understand multi-backend impact
+                        strategy_info = self.storage_manager.get_strategy_info()
+                        logger.info("Clean install: recreating buckets across all backends", 
+                                   source="setup_service",
+                                   strategy=strategy_info['strategy'],
+                                   backend_count=strategy_info['backend_count'])
+                        
+                        # Delete existing buckets first
+                        existing_buckets = self.storage_manager.list_buckets()
+                        deleted_count = 0
+                        for bucket in existing_buckets:
+                            bucket_name = bucket.get("name") or bucket.get("$id")
+                            if bucket_name:
+                                try:
+                                    self.storage_manager.delete_bucket(bucket_name)
+                                    deleted_count += 1
+                                    logger.debug(f"Deleted existing bucket", source="setup_service", bucket=bucket_name)
+                                except Exception as e:
+                                    logger.warning(f"Failed to delete bucket {bucket_name}: {e}", source="setup_service")
+                        
+                        if deleted_count > 0:
+                            result["details"] += f"Deleted {deleted_count} existing buckets for clean install; "
+                            logger.info(f"Clean install: deleted {deleted_count} existing buckets across all backends", 
+                                       source="setup_service")
+                    
+                    except Exception as e:
+                        result["details"] += f"Clean install bucket deletion error: {str(e)}; "
+                        logger.warning("Clean install bucket deletion failed", source="setup_service", error=str(e))
+                
+                # Create standard buckets
+                bucket_result = self.create_standard_buckets()
+                result["buckets_created"] = bucket_result.get("buckets_created", [])
+                
+                # Include existing buckets in the report for transparency
+                buckets_existed = bucket_result.get("buckets_existed", [])
+                if buckets_existed:
+                    result["details"] += f"Found {len(buckets_existed)} existing buckets; "
+                
+                if not bucket_result.get("success", False):
+                    result["details"] += f"Bucket creation issues: {bucket_result.get('details', '')}; "
+                else:
+                    # Log multi-backend impact
+                    strategy_info = self.storage_manager.get_strategy_info()
+                    if strategy_info['affects_all_backends']:
+                        result["details"] += f"Buckets created on all {strategy_info['backend_count']} backends; "
+                    else:
+                        result["details"] += f"Buckets created on primary backend only; "
+            else:
+                result["details"] += "Storage manager not available for bucket creation; "
+            
+            # Check overall success
+            if len(result["directories_created"]) > 0 or len(result["buckets_created"]) > 0:
+                result["success"] = True
+                result["details"] = f"Storage initialized: {len(result['directories_created'])} directories, {len(result['buckets_created'])} buckets"
+            elif result["details"] == "":
+                result["success"] = True
+                result["details"] = "Storage already initialized"
+            
+        except Exception as e:
+            logger.error("Storage initialization failed", source="setup_service", error=str(e))
+            result["details"] = f"Storage initialization error: {str(e)}"
+        
+        return result
+
+    def create_standard_buckets(self) -> Dict[str, Any]:
+        """
+        Create standardized storage buckets across all backends.
+        
+        Summary
+        -------
+        Creates the standard set of storage buckets required for polymer
+        extractor operations. Handles multi-backend scenarios and provides
+        detailed feedback on bucket creation status.
         
         Returns
         -------
-        dict
-            System health status
+        Dict[str, Any]
+            Bucket creation results with structure:
+            {
+                "success": bool,
+                "buckets_created": List[str],
+                "buckets_existed": List[str],
+                "details": str
+            }
+            
+        Examples
+        --------
+        >>> setup = SetupService()
+        >>> result = setup.create_standard_buckets()
+        >>> print(f"Created: {result['buckets_created']}")
+        >>> print(f"Existed: {result['buckets_existed']}")
+        
+        Notes
+        -----
+        - Creates buckets: raw_inputs, extracted_xml, processed_xml, samples, 
+          models, reports, system_logs, datasets, exports
+        - Safe to run multiple times - tracks which buckets already exist
+        - Works across all configured storage backends
         """
+        logger.info("Creating standard storage buckets", source="setup_service")
+        
         result = {
-            "timestamp": datetime.now().isoformat(),
-            "overall_health": "unknown",
-            "databases": {},
-            "storage": {},
-            "managers": {},
-            "issues": []
+            "success": True,
+            "buckets_created": [],
+            "buckets_existed": [],
+            "details": ""
+        }
+        
+        if not self.storage_manager:
+            result["success"] = False
+            result["details"] = "Storage manager not available"
+            return result
+        
+        # Standard bucket names (normalized for all backends)
+        standard_buckets = [
+            "raw_inputs_dir",
+            "extracted_xml_dir", 
+            "processed_xml_dir",
+            "samples_dir",
+            "models",
+            "full_reports_dir",
+            "system_logs",
+            "datasets_dir",
+            "exports_dir"
+        ]
+        
+        for bucket_name in standard_buckets:
+            try:
+                # Check if bucket exists using storage manager (strategy-aware)
+                try:
+                    if self.storage_manager.bucket_exists(bucket_name):
+                        result["buckets_existed"].append(bucket_name)
+                        logger.debug(f"Bucket already exists", source="setup_service", 
+                                   bucket=bucket_name)
+                    else:
+                        # Create bucket using storage manager (affects backends per strategy)
+                        bucket_result = self.storage_manager.create_bucket(bucket_name)
+                        if bucket_result.get("success", False) or bucket_result.get("$id"):
+                            result["buckets_created"].append(bucket_name)
+                            logger.info(f"Bucket created successfully", source="setup_service",
+                                       bucket=bucket_name)
+                        else:
+                            result["details"] += f"Failed to create bucket {bucket_name}; "
+                            logger.warning(f"Bucket creation failed", source="setup_service",
+                                         bucket=bucket_name, result=bucket_result)
+                
+                except Exception as e:
+                    result["details"] += f"Error handling bucket {bucket_name}: {str(e)}; "
+                    logger.error(f"Bucket operation failed", source="setup_service",
+                               bucket=bucket_name, error=str(e))
+                    result["success"] = False
+                    
+            except Exception as e:
+                result["details"] += f"Critical error with bucket {bucket_name}: {str(e)}; "
+                logger.error(f"Critical bucket error", source="setup_service",
+                           bucket=bucket_name, error=str(e))
+                result["success"] = False
+        
+        # Add multi-backend information to result
+        if self.storage_manager:
+            try:
+                strategy_info = self.storage_manager.get_strategy_info()
+                total_created = len(result["buckets_created"])
+                total_existed = len(result["buckets_existed"])
+                
+                if strategy_info['affects_all_backends']:
+                    result["details"] += f"Operations affected all {strategy_info['backend_count']} backends ({', '.join(strategy_info['backend_types'])}); "
+                    logger.info(f"Bucket operations completed across all backends", 
+                               source="setup_service",
+                               created=total_created, existed=total_existed,
+                               backends=strategy_info['backend_count'])
+                else:
+                    result["details"] += f"Operations affected primary backend only (strategy: {strategy_info['strategy']}); "
+                    logger.info(f"Bucket operations completed on primary backend", 
+                               source="setup_service",
+                               created=total_created, existed=total_existed,
+                               strategy=strategy_info['strategy'])
+                    
+            except Exception as e:
+                result["details"] += f"Failed to get strategy info: {str(e)}; "
+        
+        # Final success assessment
+        if result["success"] and (len(result["buckets_created"]) > 0 or len(result["buckets_existed"]) > 0):
+            total_buckets = len(result["buckets_created"]) + len(result["buckets_existed"])
+            result["details"] = f"Bucket setup completed: {len(result['buckets_created'])} created, {len(result['buckets_existed'])} existed (total: {total_buckets}). {result['details']}"
+        elif result["success"]:
+            result["details"] = "No buckets needed creation. " + result["details"]
+        
+        return result
+
+    def check_health(self) -> Dict[str, Any]:
+        """
+        Comprehensive system health check across all components.
+        
+        Summary
+        -------
+        Performs detailed health validation of PostgreSQL, Neo4j, and storage
+        backends. Returns comprehensive status information for monitoring
+        and diagnostic purposes.
+        
+        Returns
+        -------
+        Dict[str, Any]
+            Health check results with structure:
+            {
+                "overall_status": str,  # "healthy", "degraded", "unhealthy"
+                "services": {
+                    "postgres": {"status": str, "details": Dict},
+                    "neo4j": {"status": str, "details": Dict},
+                    "storage": {"status": str, "details": Dict}
+                },
+                "warnings": List[str],
+                "timestamp": str
+            }
+            
+        Examples
+        --------
+        >>> setup = SetupService()
+        >>> health = setup.check_health()
+        >>> print(f"Overall: {health['overall_status']}")
+        >>> for service, status in health['services'].items():
+        ...     print(f"{service}: {status['status']}")
+        
+        Notes
+        -----
+        - Always returns a result even if services are disabled
+        - Provides detailed diagnostic information for troubleshooting
+        - Safe to call frequently for monitoring purposes
+        - Non-blocking - won't hang on unresponsive services
+        """
+        logger.info("Performing comprehensive health check", source="setup_service")
+        
+        result = {
+            "overall_status": "healthy",
+            "services": {},
+            "warnings": [],
+            "timestamp": datetime.utcnow().isoformat()
         }
         
         # Check PostgreSQL
-        if self.postgres_client:
+        if self.postgres_enabled and self.postgres_client:
             try:
-                postgres_healthy = self.postgres_client.test_connection()
-                result["databases"]["postgresql"] = {
-                    "status": "healthy" if postgres_healthy else "unhealthy",
-                    "connection": postgres_healthy,
-                    "tables_count": len(self.postgres_client.list_tables()) if postgres_healthy else 0
+                pg_health = self.postgres_client.health_check()
+                result["services"]["postgres"] = {
+                    "status": "healthy" if pg_health.get("ok", False) else "unhealthy",
+                    "details": pg_health
                 }
-                if not postgres_healthy:
-                    result["issues"].append("PostgreSQL connection failed")
+                if not pg_health.get("ok", False):
+                    result["warnings"].append("PostgreSQL is unhealthy")
             except Exception as e:
-                result["databases"]["postgresql"] = {"status": "error", "error": str(e)}
-                result["issues"].append(f"PostgreSQL health check failed: {e}")
+                result["services"]["postgres"] = {
+                    "status": "error",
+                    "details": {"error": str(e)}
+                }
+                result["warnings"].append(f"PostgreSQL health check failed: {str(e)}")
         else:
-            result["databases"]["postgresql"] = {"status": "not_configured"}
+            result["services"]["postgres"] = {
+                "status": "disabled",
+                "details": {"reason": "PostgreSQL disabled or client not initialized"}
+            }
         
         # Check Neo4j
-        if self.neo4j_client:
+        if self.neo4j_enabled and self.neo4j_client:
             try:
-                neo4j_healthy = self.neo4j_client.test_connection()
-                result["databases"]["neo4j"] = {
-                    "status": "healthy" if neo4j_healthy else "unhealthy",
-                    "connection": neo4j_healthy
+                neo4j_health = self.neo4j_client.health_check()
+                result["services"]["neo4j"] = {
+                    "status": "healthy" if neo4j_health.get("ok", False) else "unhealthy",
+                    "details": neo4j_health
                 }
-                if not neo4j_healthy:
-                    result["issues"].append("Neo4j connection failed")
+                if not neo4j_health.get("ok", False):
+                    result["warnings"].append("Neo4j is unhealthy")
             except Exception as e:
-                result["databases"]["neo4j"] = {"status": "error", "error": str(e)}
-                result["issues"].append(f"Neo4j health check failed: {e}")
+                result["services"]["neo4j"] = {
+                    "status": "error", 
+                    "details": {"error": str(e)}
+                }
+                result["warnings"].append(f"Neo4j health check failed: {str(e)}")
         else:
-            result["databases"]["neo4j"] = {"status": "not_configured"}
+            result["services"]["neo4j"] = {
+                "status": "disabled",
+                "details": {"reason": "Neo4j disabled or client not initialized"}
+            }
         
-        # Check storage
-        if self.bucket_client:
+        # Check Storage
+        if self.storage_client:
             try:
-                storage_healthy = self.bucket_client.test_connection()
-                result["storage"] = {
-                    "status": "healthy" if storage_healthy else "unhealthy",
-                    "backend": self.bucket_client.get_backend_type(),
-                    "connection": storage_healthy
+                # Simple connectivity test - just list root folder (fix parameter issue)
+                resources = self.storage_client.list_resources("")
+                result["services"]["storage"] = {
+                    "status": "healthy",
+                    "details": {
+                        "backend": self.storage_backend,
+                        "connectivity": "ok"
+                    }
                 }
-                if not storage_healthy:
-                    result["issues"].append("Storage connection failed")
             except Exception as e:
-                result["storage"] = {"status": "error", "error": str(e)}
-                result["issues"].append(f"Storage health check failed: {e}")
+                result["services"]["storage"] = {
+                    "status": "unhealthy",
+                    "details": {
+                        "backend": self.storage_backend,
+                        "error": str(e)
+                    }
+                }
+                result["warnings"].append(f"Storage backend unhealthy: {str(e)}")
         else:
-            result["storage"] = {"status": "not_configured"}
+            result["services"]["storage"] = {
+                "status": "error",
+                "details": {"reason": "Storage client not initialized"}
+            }
+            result["warnings"].append("Storage client not available")
         
-        # Check managers
-        result["managers"] = {
-            "database_manager": "available" if self.database_manager else "not_available",
-            "graph_manager": "available" if self.graph_manager else "not_available",
-            "bucket_client": "available" if self.bucket_client else "not_available"
-        }
+        # Determine overall status
+        service_statuses = [svc["status"] for svc in result["services"].values()]
+        if any(status == "error" for status in service_statuses):
+            result["overall_status"] = "unhealthy"
+        elif any(status == "unhealthy" for status in service_statuses):
+            result["overall_status"] = "degraded"
+        elif len(result["warnings"]) > 0:
+            result["overall_status"] = "degraded"
         
-        # Determine overall health
-        if not result["issues"]:
-            result["overall_health"] = "healthy"
-        elif len(result["issues"]) <= 2:
-            result["overall_health"] = "degraded"
-        else:
-            result["overall_health"] = "unhealthy"
+        logger.info("Health check completed", source="setup_service",
+                   overall_status=result["overall_status"], 
+                   warnings_count=len(result["warnings"]))
         
         return result
 
-    def clean_install(self) -> Dict[str, Any]:
+    def get_status(self) -> Dict[str, Any]:
         """
-        Perform clean installation - drops all data and recreates schemas.
+        Get current system status and configuration.
+        
+        Summary
+        -------
+        Returns comprehensive information about the current system state
+        including configuration, component status, and operational metrics.
+        Combines environment info with health status for complete overview.
         
         Returns
         -------
-        dict
-            Clean installation results
+        Dict[str, Any]
+            System status with structure:
+            {
+                "environment": Dict[str, Any],
+                "health": Dict[str, Any],
+                "configuration": {
+                    "postgres_enabled": bool,
+                    "neo4j_enabled": bool,
+                    "storage_backend": str
+                },
+                "timestamp": str
+            }
+            
+        Examples
+        --------
+        >>> setup = SetupService()
+        >>> status = setup.get_status()
+        >>> print(f"PostgreSQL: {status['configuration']['postgres_enabled']}")
+        >>> print(f"Health: {status['health']['overall_status']}")
+        
+        Notes
+        -----
+        - Combines environment and health information
+        - Useful for administrative dashboards and monitoring
+        - Safe to call frequently for status updates
         """
-        self.logger.info("Starting clean installation", source="setup_service", event_type="clean_install")
+        logger.debug("Getting system status", source="setup_service")
         
-        # Reset database logs first
-        if self.logger:
-            self.logger.reset_database_logs()
+        return {
+            "environment": self.get_environment_info(),
+            "health": self.check_health(),
+            "configuration": {
+                "postgres_enabled": self.postgres_enabled,
+                "neo4j_enabled": self.neo4j_enabled,
+                "storage_backend": self.storage_backend,
+                "storage_backends_active": os.getenv("STORAGE_BACKENDS_ACTIVE", "local").split(",")
+            },
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
+    def reset(self, components: Optional[List[str]] = None, preserve_structure: bool = True) -> Dict[str, Any]:
+        """
+        Reset specified components by removing data while preserving structure.
         
-        # Perform clean initialization
-        result = self.initialize_system(clean_install=True)
+        Summary
+        -------
+        Safely resets system components by clearing data while maintaining
+        database schemas, graph constraints, and directory structures.
+        Provides granular control over which components to reset.
         
-        if result["success"]:
-            self.logger.info("Clean installation completed successfully", source="setup_service", event_type="clean_install")
-        else:
-            self.logger.error("Clean installation failed", source="setup_service", event_type="clean_install", errors=result["errors"])
+        Parameters
+        ----------
+        components : List[str], optional
+            Components to reset: ['database', 'graph', 'storage'] (default: all enabled)
+        preserve_structure : bool, optional
+            If True, keep schemas/constraints/directories (default: True)
+            
+        Returns
+        -------
+        Dict[str, Any]
+            Reset results with structure:
+            {
+                "success": bool,
+                "components_reset": List[str],
+                "details": Dict[str, str],
+                "warnings": List[str]
+            }
+            
+        Examples
+        --------
+        >>> setup = SetupService()
+        >>> result = setup.reset(['database', 'storage'])
+        >>> print(f"Reset: {result['components_reset']}")
+        
+        Notes
+        -----
+        - Safe operation - preserves schemas and structure by default
+        - Never resets system_logs table structure (managed by logging.py)
+        - For system_logs: only clears old data, preserves recent entries
+        - Protected buckets (models) are excluded from reset operations
+        - Protected buckets contain valuable assets and are preserved
+        - Granular control over which components to reset
+        - Logs all reset operations for audit trail
+        """
+        logger.info("Starting component reset", source="setup_service",
+                   components=components, preserve_structure=preserve_structure)
+        
+        if components is None:
+            components = []
+            if self.postgres_enabled:
+                components.append("database")
+            if self.neo4j_enabled:
+                components.append("graph")
+            components.append("storage")
+        
+        result = {
+            "success": True,
+            "components_reset": [],
+            "details": {},
+            "warnings": []
+        }
+        
+        # Reset database
+        if "database" in components and self.postgres_enabled and self.postgres_client:
+            try:
+                # Clear table data but preserve structure
+                # NEVER reset system_logs table structure - only clear data if needed
+                # system_logs table is managed by logging.py
+                tables = ["datasets_metadata", "extraction_metadata", "models_metadata"]
+                for table in tables:
+                    try:
+                        self.postgres_client.run(f"TRUNCATE TABLE {table} RESTART IDENTITY CASCADE")
+                        logger.info(f"Reset table data", source="setup_service", table=table)
+                    except Exception as e:
+                        result["warnings"].append(f"Failed to reset table {table}: {str(e)}")
+                
+                # For system_logs, only clear records if explicitly requested (not structure)
+                if preserve_structure:
+                    try:
+                        # Only clear data, not structure - system_logs is managed by logging.py
+                        self.postgres_client.run("DELETE FROM system_logs WHERE created_at < NOW() - INTERVAL '1 hour'")
+                        logger.info("Cleared old system_logs data (preserving recent entries)", source="setup_service")
+                    except Exception as e:
+                        result["warnings"].append(f"Failed to clear old system_logs data: {str(e)}")
+                
+                result["components_reset"].append("database")
+                result["details"]["database"] = f"Reset {len(tables)} tables (system_logs data partially cleared)"
+                
+            except Exception as e:
+                result["warnings"].append(f"Database reset failed: {str(e)}")
+                result["success"] = False
+        
+        # Reset graph
+        if "graph" in components and self.neo4j_enabled and self.neo4j_client:
+            try:
+                # Clear all nodes and relationships but preserve constraints
+                self.neo4j_client.run("MATCH (n) DETACH DELETE n")
+                result["components_reset"].append("graph")
+                result["details"]["graph"] = "Cleared all nodes and relationships"
+                logger.info("Reset graph database", source="setup_service")
+                
+            except Exception as e:
+                result["warnings"].append(f"Graph reset failed: {str(e)}")
+                result["success"] = False
+        
+        # Reset storage (clear ALL buckets and files across ALL backends)
+        if "storage" in components:
+            try:
+                reset_details = []
+                
+                if self.storage_manager:
+                    # Get current storage strategy info to understand multi-backend setup
+                    strategy_info = self.storage_manager.get_strategy_info()
+                    logger.info("Resetting storage across all backends", source="setup_service",
+                               strategy=strategy_info['strategy'], 
+                               backend_count=strategy_info['backend_count'],
+                               affects_all=strategy_info['affects_all_backends'])
+                    
+                    # For setup operations, we need to reset ALL backends regardless of strategy
+                    # This overrides normal strategy constraints during setup
+                    
+                    # 1. Get all buckets from all backends (aggregated view)
+                    try:
+                        all_buckets = self.storage_manager.list_buckets()
+                        bucket_names = list(set([bucket.get("name") or bucket.get("$id") for bucket in all_buckets if bucket.get("name") or bucket.get("$id")]))
+                        
+                        # Exclude models bucket from reset operations (preserve valuable models)
+                        protected_buckets = self._get_protected_buckets()
+                        resetable_buckets = [name for name in bucket_names if name not in protected_buckets]
+                        excluded_buckets = [name for name in bucket_names if name in protected_buckets]
+                        
+                        logger.info(f"Found {len(bucket_names)} buckets total: {len(resetable_buckets)} to reset, {len(excluded_buckets)} protected", 
+                                   source="setup_service", 
+                                   resetable=resetable_buckets, 
+                                   protected=excluded_buckets)
+                        
+                        # 2. Delete only non-protected buckets (this will affect all backends based on strategy)
+                        deleted_buckets = []
+                        for bucket_name in resetable_buckets:
+                            try:
+                                success = self.storage_manager.delete_bucket(bucket_name)
+                                if success:
+                                    deleted_buckets.append(bucket_name)
+                                    logger.info(f"Deleted bucket from all backends", source="setup_service", bucket=bucket_name)
+                                else:
+                                    result["warnings"].append(f"Failed to delete bucket: {bucket_name}")
+                            except Exception as e:
+                                result["warnings"].append(f"Error deleting bucket {bucket_name}: {str(e)}")
+                        
+                        if excluded_buckets:
+                            reset_details.append(f"Deleted {len(deleted_buckets)} buckets across all backends (protected: {', '.join(excluded_buckets)})")
+                        else:
+                            reset_details.append(f"Deleted {len(deleted_buckets)} buckets across all backends")
+                        
+                        # 3. Recreate standard buckets if preserve_structure is True
+                        if preserve_structure:
+                            bucket_creation_result = self._create_standard_buckets_with_override()
+                            if bucket_creation_result.get("success", False):
+                                created_buckets = bucket_creation_result.get("buckets_created", [])
+                                reset_details.append(f"Recreated {len(created_buckets)} standard buckets")
+                                logger.info("Recreated standard buckets after reset", source="setup_service", 
+                                           created=len(created_buckets))
+                            else:
+                                result["warnings"].append("Failed to recreate standard buckets after reset")
+                        
+                    except Exception as e:
+                        result["warnings"].append(f"Storage bucket reset failed: {str(e)}")
+                    
+                    # 4. Log multi-backend impact
+                    if strategy_info['affects_all_backends']:
+                        reset_details.append(f"Reset affected all {strategy_info['backend_count']} backends ({', '.join(strategy_info['backend_types'])})")
+                    else:
+                        reset_details.append(f"Reset affected primary backend only (strategy: {strategy_info['strategy']})")
+                
+                else:
+                    reset_details.append("Storage manager not available - basic directory cleanup performed")
+                    # Fallback: basic directory cleanup for local storage only
+                    try:
+                        from polymer_extractor.utils.paths import PUBLIC_DIR
+                        public_path = Path(PUBLIC_DIR)
+                        if public_path.exists():
+                            # Don't actually delete directories during reset - too dangerous
+                            # Just mark for cleanup or leave as-is
+                            reset_details.append("Local storage directories preserved")
+                    except Exception as e:
+                        result["warnings"].append(f"Local directory handling failed: {str(e)}")
+                
+                result["components_reset"].append("storage")
+                result["details"]["storage"] = "; ".join(reset_details)
+                logger.info("Storage reset completed", source="setup_service", details=reset_details)
+                
+            except Exception as e:
+                result["warnings"].append(f"Storage reset failed: {str(e)}")
+                result["success"] = False
+        
+        logger.info("Component reset completed", source="setup_service",
+                   success=result["success"], components_reset=result["components_reset"])
         
         return result
 
-    # === Backward Compatibility Methods (Deprecated) ===
-    
-    def setup_appwrite_collections(self) -> Dict[str, Any]:
-        """Deprecated: Appwrite collections no longer supported."""
-        import warnings
-        warnings.warn(
-            "setup_appwrite_collections is deprecated. Use setup_storage_system instead.", 
-            DeprecationWarning, 
-            stacklevel=2
+    def wipe_data(self, preserve_structure: bool = True, confirm_wipe: bool = False) -> Dict[str, Any]:
+        """
+        Remove all data while preserving schemas and structure.
+        
+        Summary
+        -------
+        Performs comprehensive data removal across all components while
+        optionally preserving database schemas, graph constraints, and
+        directory structures. Requires explicit confirmation for safety.
+        
+        For storage operations, this affects ALL configured backends regardless
+        of the normal strategy constraints, ensuring complete data removal
+        across the distributed storage system.
+        
+        Parameters
+        ----------
+        preserve_structure : bool, optional
+            If True, keep schemas/constraints/directories (default: True)
+        confirm_wipe : bool, optional
+            Explicit confirmation required for data wipe (default: False)
+            
+        Returns
+        -------
+        Dict[str, Any]
+            Wipe results with structure:
+            {
+                "success": bool,
+                "data_wiped": bool,
+                "components_affected": List[str],
+                "details": str,
+                "warnings": List[str],
+                "backend_impact": Dict[str, Any]
+            }
+            
+        Raises
+        ------
+        ValueError
+            If confirm_wipe is False (safety mechanism)
+            
+        Examples
+        --------
+        >>> setup = SetupService()
+        >>> result = setup.wipe_data(confirm_wipe=True)
+        >>> print(f"Wiped: {result['data_wiped']}")
+        >>> print(f"Backends affected: {result['backend_impact']}")
+        
+        Notes
+        -----
+        - Requires explicit confirmation for safety
+        - Preserves structure by default
+        - Protected buckets (models) are excluded from wipe operations
+        - Affects ALL configured storage backends during setup
+        - Comprehensive logging for audit trail
+        - Use with extreme caution in production
+        """
+        if not confirm_wipe:
+            raise ValueError("Data wipe requires explicit confirmation (confirm_wipe=True)")
+        
+        logger.warning("Starting COMPLETE data wipe operation", source="setup_service",
+                      preserve_structure=preserve_structure, confirm_wipe=confirm_wipe)
+        
+        # Get storage strategy info before wiping for impact assessment
+        backend_impact = {"strategy": "unknown", "backends_affected": 0, "backend_types": []}
+        if self.storage_manager:
+            try:
+                strategy_info = self.storage_manager.get_strategy_info()
+                backend_impact = {
+                    "strategy": strategy_info['strategy'],
+                    "backends_affected": strategy_info['backend_count'],
+                    "backend_types": strategy_info['backend_types'],
+                    "affects_all_backends": strategy_info['affects_all_backends']
+                }
+                logger.warning("Data wipe will affect storage backends", source="setup_service",
+                              strategy=strategy_info['strategy'],
+                              backend_count=strategy_info['backend_count'],
+                              backend_types=strategy_info['backend_types'])
+            except Exception as e:
+                logger.warning("Could not assess backend impact before wipe", source="setup_service", error=str(e))
+        
+        # Use enhanced reset functionality with all components
+        reset_result = self.reset(
+            components=["database", "graph", "storage"],
+            preserve_structure=preserve_structure
         )
-        return {
-            "success": False,
-            "error": "Appwrite collections are no longer supported. Use PostgreSQL + storage backends instead.",
-            "migration_note": "Data should be migrated to PostgreSQL database with flexible storage via BucketClient"
+        
+        # Enhance result with wipe-specific information
+        wipe_result = {
+            "success": reset_result.get("success", False),
+            "data_wiped": reset_result.get("success", False),
+            "components_affected": reset_result.get("components_reset", []),
+            "details": f"Complete data wipe performed: {'; '.join([f'{k}: {v}' for k, v in reset_result.get('details', {}).items()])}",
+            "warnings": reset_result.get("warnings", []),
+            "backend_impact": backend_impact
         }
-    
-    def setup_appwrite_buckets(self) -> Dict[str, Any]:
-        """Deprecated: Use setup_storage_system instead."""
-        import warnings
-        warnings.warn(
-            "setup_appwrite_buckets is deprecated. Use setup_storage_system instead.", 
-            DeprecationWarning, 
-            stacklevel=2
-        )
-        return self.setup_storage_system()
-    
-    def reset_appwrite_database(self) -> Dict[str, Any]:
-        """Deprecated: Appwrite database operations no longer supported."""
-        import warnings
-        warnings.warn(
-            "reset_appwrite_database is deprecated. Use PostgreSQL reset operations instead.", 
-            DeprecationWarning, 
-            stacklevel=2
-        )
-        return {
+        
+        if wipe_result["success"]:
+            logger.warning("Data wipe completed successfully", source="setup_service",
+                          components=wipe_result["components_affected"],
+                          backend_impact=backend_impact)
+        else:
+            logger.error("Data wipe completed with errors", source="setup_service",
+                        warnings=wipe_result["warnings"],
+                        backend_impact=backend_impact)
+        
+        return wipe_result
+
+    def sync_models_from_github(self, force_redownload: bool = False) -> Dict[str, Any]:
+        """
+        Synchronize models and tokenizers from GitHub repositories.
+        
+        Summary
+        -------
+        Phase 2 enhancement for GitHub-based models synchronization. Downloads 
+        latest models and tokenizers from configured GitHub repositories, validates
+        version compatibility, and updates local models directory atomically.
+        
+        Parameters
+        ----------
+        force_redownload : bool, optional
+            Force redownload even if models exist (default: False)
+            
+        Returns
+        -------
+        Dict[str, Any]
+            Sync results with structure:
+            {
+                "success": bool,
+                "service_available": bool,
+                "models_synced": int,
+                "tokenizers_synced": int,
+                "version_validated": bool,
+                "errors": List[str],
+                "duration_seconds": float
+            }
+            
+        Examples
+        --------
+        >>> setup = SetupService()
+        >>> result = setup.sync_models_from_github(force_redownload=True)
+        >>> if result["success"]:
+        ...     print(f"Synced {result['models_synced']} models")
+        ... else:
+        ...     print(f"Errors: {result['errors']}")
+        
+        Notes
+        -----
+        - Atomic operation: either fully succeeds or rolls back
+        - Requires GITHUB_TOKEN, TOKENIZERS_REMOTE_URL, FINETUNED_REMOTE_URL
+        - Integrates with protected bucket logic for models storage
+        - Part of Phase 2 setup enhancements for models folder GitHub sync
+        """
+        logger.info("Starting GitHub models sync via setup service", source="setup_service", 
+                   force_redownload=force_redownload)
+        
+        result = {
             "success": False,
-            "error": "Appwrite database operations are no longer supported. Use PostgreSQL operations instead."
+            "service_available": MODELS_SYNC_AVAILABLE,
+            "models_synced": 0,
+            "tokenizers_synced": 0,
+            "version_validated": False,
+            "errors": [],
+            "duration_seconds": 0.0
         }
+        
+        if not MODELS_SYNC_AVAILABLE:
+            error_msg = "Models sync service not available - ModelsSyncService import failed"
+            result["errors"].append(error_msg)
+            logger.error(error_msg, source="setup_service")
+            return result
+        
+        try:
+            start_time = datetime.utcnow()
+            
+            # Initialize models sync service
+            models_sync_service = ModelsSyncService(logger=logger)
+            
+            # Perform GitHub sync
+            sync_result = models_sync_service.sync_models_from_github(force_redownload=force_redownload)
+            
+            # Map results
+            result["success"] = sync_result["success"]
+            result["models_synced"] = sync_result["models_synced"]
+            result["tokenizers_synced"] = sync_result["tokenizers_synced"]
+            result["version_validated"] = sync_result["version_validated"]
+            result["errors"] = sync_result.get("errors", [])
+            
+            end_time = datetime.utcnow()
+            result["duration_seconds"] = (end_time - start_time).total_seconds()
+            
+            if result["success"]:
+                logger.info("GitHub models sync completed successfully via setup service", 
+                           source="setup_service", 
+                           models_synced=result["models_synced"],
+                           tokenizers_synced=result["tokenizers_synced"])
+            else:
+                logger.error("GitHub models sync failed via setup service", 
+                           source="setup_service", errors=result["errors"])
+                           
+        except Exception as e:
+            error_msg = f"Unexpected error during models sync: {str(e)}"
+            result["errors"].append(error_msg)
+            logger.error(error_msg, source="setup_service", error=str(e))
+        
+        return result
+
+    def validate_models_versions(self) -> Dict[str, Any]:
+        """
+        Validate version compatibility between existing models and tokenizers.
+        
+        Summary
+        -------
+        Phase 2 enhancement for models version validation. Checks all models and 
+        tokenizers in the models directory for version compatibility and structural
+        completeness. Provides detailed analysis of each model-tokenizer pair.
+        
+        Returns
+        -------
+        Dict[str, Any]
+            Validation results with structure:
+            {
+                "valid": bool,
+                "service_available": bool,
+                "models_checked": int,
+                "compatible_pairs": int,
+                "incompatible_pairs": int,
+                "missing_components": List[str],
+                "validation_details": List[Dict[str, Any]],
+                "recommended_actions": List[str]
+            }
+            
+        Examples
+        --------
+        >>> setup = SetupService()
+        >>> result = setup.validate_models_versions()
+        >>> if result["valid"]:
+        ...     print("All models validated successfully")
+        ... else:
+        ...     print(f"Issues found: {result['recommended_actions']}")
+        
+        Notes
+        -----
+        - Checks for required model files (config.json, pytorch_model.bin)
+        - Validates tokenizer files (tokenizer_config.json, vocab.txt)
+        - Verifies version metadata consistency
+        - Part of Phase 2 setup enhancements for models folder version validation
+        """
+        logger.info("Starting models version validation via setup service", source="setup_service")
+        
+        result = {
+            "valid": False,
+            "service_available": MODELS_SYNC_AVAILABLE,
+            "models_checked": 0,
+            "compatible_pairs": 0,
+            "incompatible_pairs": 0,
+            "missing_components": [],
+            "validation_details": [],
+            "recommended_actions": []
+        }
+        
+        if not MODELS_SYNC_AVAILABLE:
+            error_msg = "Models sync service not available - ModelsSyncService import failed"
+            result["recommended_actions"].append(error_msg)
+            logger.error(error_msg, source="setup_service")
+            return result
+        
+        try:
+            # Initialize models sync service
+            models_sync_service = ModelsSyncService(logger=logger)
+            
+            # Perform validation
+            validation_result = models_sync_service.validate_models_versions()
+            
+            # Map results
+            result.update(validation_result)
+            result["service_available"] = True
+            
+            if result["valid"]:
+                logger.info("Models version validation completed successfully via setup service", 
+                           source="setup_service", models_checked=result["models_checked"])
+            else:
+                logger.warning("Models version validation found issues via setup service", 
+                             source="setup_service", 
+                             incompatible_pairs=result["incompatible_pairs"],
+                             missing_components=result["missing_components"])
+                             
+        except Exception as e:
+            error_msg = f"Unexpected error during models validation: {str(e)}"
+            result["recommended_actions"].append(error_msg)
+            logger.error(error_msg, source="setup_service", error=str(e))
+        
+        return result
+
+
+# Factory function for easy access
+def get_setup_service() -> SetupService:
+    """
+    Get SetupService instance.
     
-    def check_appwrite_status(self) -> Dict[str, Any]:
-        """Deprecated: Appwrite status checks no longer supported."""
-        import warnings
-        warnings.warn(
-            "check_appwrite_status is deprecated. Use check_system_health instead.", 
-            DeprecationWarning, 
-            stacklevel=2
-        )
-        return {
-            "success": False,
-            "error": "Appwrite status checks are no longer supported. Use check_system_health instead."
-        }
+    Summary
+    -------
+    Factory function that returns a SetupService instance with proper
+    configuration and initialization.
+    
+    Returns
+    -------
+    SetupService
+        Configured setup service instance
+        
+    Examples
+    --------
+    >>> setup = get_setup_service()
+    >>> health = setup.check_health()
+    """
+    return SetupService()
+
+
+if __name__ == "__main__":
+    # Example usage and testing
+    setup = SetupService()
+    print("SetupService initialized")
+    
+    # Get environment info
+    env_info = setup.get_environment_info()
+    print(f"Environment: PostgreSQL={env_info['postgres_enabled']}, Neo4j={env_info['neo4j_enabled']}")
+    
+    # Check health
+    health = setup.check_health()
+    print(f"Health: {health['overall_status']}")
+    
+    # Initialize system
+    if env_info['postgres_enabled'] or env_info['neo4j_enabled']:
+        init_result = setup.initialize()
+        print(f"Initialization: {init_result['success']}")

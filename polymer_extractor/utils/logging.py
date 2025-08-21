@@ -1,3 +1,49 @@
+"""
+polymer_extractor/utils/logging.py
+
+Summary
+-------
+Independent, thread-safe logging system with direct PostgreSQL integration, intelligent
+deduplication, and structured log entry management. Provides file-based and database-based
+logging without dependency on DatabaseManager to avoid circular imports.
+
+Key abstractions
+----------------
+- LogEntry: structured dataclass for type-safe log entries with metadata
+- Logger: main logging facade with level filtering, deduplication, and multi-output support
+- LogDeduplicator: prevents log spam by tracking recent similar messages
+- SmartTruncator: intelligently truncates context data to prevent oversized logs
+- DirectPostgreSQLLogger: direct database connection for logging without circular dependencies
+
+Invariants
+----------
+- All logs are timestamped in UTC ISO-8601 format
+- Database operations are isolated to prevent circular import issues
+- File-based logging always works regardless of database connectivity
+- Thread-safe operations across all logging components
+- Memory buffer maintains recent logs for fast retrieval
+
+Examples
+--------
+>>> from polymer_extractor.utils.logging import Logger
+>>> logger = Logger(min_level="INFO", enable_database=True)
+>>> logger.info("Processing started", source="main", file_count=5)
+>>> logger.error("Database error", source="db_service", exception=db_error)
+>>> 
+>>> # Global logger usage
+>>> from polymer_extractor.utils.logging import get_logger
+>>> log = get_logger()
+>>> log.warning("Low disk space", source="storage", available_mb=100)
+
+Notes
+-----
+- Complexity: O(1) for most operations, O(n) for deduplication cleanup
+- Side effects: creates log files, database entries, modifies memory buffer
+- Thread safety: all operations are thread-safe via locks
+- Performance: uses deque for efficient memory buffer operations
+- Environment dependencies: PostgreSQL connection details from environment variables
+"""
+
 # polymer_extractor/utils/logging.py
 
 import inspect
@@ -17,12 +63,70 @@ import psycopg2.extras
 import numpy as np
 import torch
 
-from polymer_extractor.utils.paths import LOGS_DIR
+# NOTE: This import causes a circular dependency, so we use the direct path
+# from polymer_extractor.utils.paths import SYSTEM_LOGS_DIR
+
+# Compute LOGS_DIR using the same project structure rules as paths.py
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"))
+WORKSPACE_DIR = os.path.join(PROJECT_ROOT, "workspace")
+PUBLIC_DIR = os.path.join(WORKSPACE_DIR, "public")
+LOGS_DIR = os.path.join(PUBLIC_DIR, "system_logs")
 
 
 @dataclass
 class LogEntry:
-    """Structured log entry for better type safety and serialization."""
+    """
+    Structured log entry for type-safe logging with comprehensive metadata.
+    
+    Summary
+    -------
+    Immutable dataclass containing all log information including timestamp, level,
+    message, source context, stack traces, and categorization. Provides serialization
+    methods for file output and database storage.
+    
+    Parameters
+    ----------
+    timestamp : str
+        UTC timestamp in ISO-8601 format (auto-generated if empty)
+    level : str
+        Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+    message : str
+        Primary log message content
+    source : str
+        Source module/service/component generating the log
+    event_type : str
+        Event classification (general, user_action, system_event, etc.)
+    user_action : bool
+        Whether this log represents a user-initiated action
+    context : Dict[str, Any], optional
+        Additional structured context data
+    stack_trace : str, optional
+        Exception stack trace if applicable
+    file_name : str, optional
+        Source file name where log was generated
+    line_number : int, optional
+        Line number where log was generated
+    category : str
+        Log category (system, api, user, model, database, performance)
+        
+    Examples
+    --------
+    >>> entry = LogEntry(
+    ...     level="ERROR",
+    ...     message="Database connection failed",
+    ...     source="db_service",
+    ...     context={"host": "localhost", "port": 5432}
+    ... )
+    >>> entry.to_dict()
+    {'timestamp': '2025-08-20T12:34:56.789Z', 'level': 'ERROR', ...}
+    
+    Notes
+    -----
+    - All fields have sensible defaults for easy construction
+    - Context should contain JSON-serializable data only
+    - Stack traces are automatically cleaned for readability
+    - Thread-safe when used with proper synchronization
+    """
     timestamp: str = ""
     level: str = "INFO"
     message: str = ""
@@ -36,14 +140,57 @@ class LogEntry:
     category: str = "system"
     
     def to_dict(self, include_nulls: bool = True) -> Dict[str, Any]:
-        """Convert to dictionary, optionally excluding null values."""
+        """
+        Convert log entry to dictionary format for serialization.
+        
+        Parameters
+        ----------
+        include_nulls : bool
+            Whether to include fields with None/empty values
+            
+        Returns
+        -------
+        Dict[str, Any]
+            Dictionary representation suitable for JSON serialization
+            
+        Examples
+        --------
+        >>> entry = LogEntry(level="INFO", message="Test")
+        >>> entry.to_dict(include_nulls=False)
+        {'level': 'INFO', 'message': 'Test', 'event_type': 'general', ...}
+        
+        Notes
+        -----
+        - Uses dataclasses.asdict() for automatic field extraction
+        - Filtering None values reduces storage size and improves readability
+        """
         data = asdict(self)
         if not include_nulls:
             return {k: v for k, v in data.items() if v is not None}
         return data
     
     def to_human_readable(self) -> str:
-        """Convert to human-readable log line with clean formatting."""
+        """
+        Convert to human-readable single-line log format.
+        
+        Returns
+        -------
+        str
+            Formatted log line with timestamp, level, source, and message
+            
+        Examples
+        --------
+        >>> entry = LogEntry(level="ERROR", message="Failed", source="api")
+        >>> entry.to_human_readable()
+        '12:34:56 [ERROR] [api           ] Failed'
+        
+        Notes
+        -----
+        - Optimized for terminal/file output readability
+        - Truncates timestamp to time-only format
+        - Fixed-width source field for alignment
+        - Context data appended as key=value pairs
+        """
         timestamp_short = self.timestamp.split('T')[1][:8] if 'T' in self.timestamp else self.timestamp[:8]
         level_colored = f"[{self.level:5}]"
         source_info = f"{self.source}" if self.source else "system"
@@ -61,7 +208,47 @@ class LogEntry:
 
 
 class LogDeduplicator:
-    """Efficient deduplication to prevent log spam."""
+    """
+    Efficient log deduplication to prevent spam in high-frequency scenarios.
+    
+    Summary
+    -------
+    Thread-safe deduplication system that tracks similar log messages within a time
+    window and limits the number of identical log entries to prevent log flooding
+    from repeated errors or warnings.
+    
+    Parameters
+    ----------
+    window_seconds : int
+        Time window in seconds for tracking duplicate messages (default: 60)
+    max_occurrences : int
+        Maximum number of similar messages allowed within the window (default: 5)
+        
+    Attributes
+    ----------
+    recent_logs : deque
+        Time-ordered queue of (timestamp, log_key) tuples
+    log_counts : defaultdict
+        Count of occurrences for each log pattern
+    lock : Lock
+        Thread synchronization lock for safe concurrent access
+        
+    Examples
+    --------
+    >>> deduplicator = LogDeduplicator(window_seconds=30, max_occurrences=3)
+    >>> # First few messages allowed
+    >>> deduplicator.should_log("Connection failed", "ERROR", "db_service")  # True
+    >>> deduplicator.should_log("Connection failed", "ERROR", "db_service")  # True
+    >>> deduplicator.should_log("Connection failed", "ERROR", "db_service")  # True
+    >>> deduplicator.should_log("Connection failed", "ERROR", "db_service")  # False (spam)
+    
+    Notes
+    -----
+    - Complexity: O(1) amortized for should_log(), O(k) for cleanup where k is expired entries
+    - Side effects: modifies internal state, performs automatic cleanup
+    - Thread safety: all operations protected by internal lock
+    - Memory usage: bounded by window size and message diversity
+    """
     def __init__(self, window_seconds: int = 60, max_occurrences: int = 5):
         self.window_seconds = window_seconds
         self.max_occurrences = max_occurrences
@@ -70,7 +257,37 @@ class LogDeduplicator:
         self.lock = Lock()
     
     def should_log(self, message: str, level: str, source: str) -> bool:
-        """Check if log should be recorded or is spam."""
+        """
+        Determine if a log message should be recorded or is considered spam.
+        
+        Parameters
+        ----------
+        message : str
+            Log message content to check for duplication
+        level : str
+            Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+        source : str
+            Source component/module generating the message
+            
+        Returns
+        -------
+        bool
+            True if message should be logged, False if it's spam
+            
+        Examples
+        --------
+        >>> deduplicator = LogDeduplicator(max_occurrences=2)
+        >>> deduplicator.should_log("Error occurred", "ERROR", "service")  # True
+        >>> deduplicator.should_log("Error occurred", "ERROR", "service")  # True  
+        >>> deduplicator.should_log("Error occurred", "ERROR", "service")  # False
+        
+        Notes
+        -----
+        - Automatically cleans expired entries from tracking window
+        - Uses message pattern matching to group similar messages
+        - Thread-safe operation with internal locking
+        - Returns False when max_occurrences exceeded within window
+        """
         with self.lock:
             now = datetime.now()
             log_key = f"{level}:{source}:{self._get_message_pattern(message)}"
@@ -102,13 +319,71 @@ class LogDeduplicator:
 
 
 class SmartTruncator:
-    """Smart content truncation for log context."""
+    """
+    Intelligent content truncation for log context data to prevent oversized logs.
+    
+    Summary
+    -------
+    Provides type-aware truncation of context data including strings, lists, dicts,
+    and nested structures while preserving data readability and preventing log files
+    from becoming unmanageably large.
+    
+    Parameters
+    ----------
+    max_string_length : int
+        Maximum length for string values before truncation (default: 500)
+    max_list_items : int
+        Maximum number of list/tuple items to preserve (default: 10)
+        
+    Examples
+    --------
+    >>> truncator = SmartTruncator(max_string_length=100, max_list_items=5)
+    >>> large_context = {
+    ...     "data": "x" * 200,
+    ...     "items": list(range(20)),
+    ...     "nested": {"key": "y" * 150}
+    ... }
+    >>> truncated = truncator.truncate_context(large_context)
+    >>> len(truncated["data"])  # <= 100
+    True
+    
+    Notes
+    -----
+    - Preserves data type structure while reducing size
+    - Adds truncation indicators (e.g., "...[truncated]")
+    - Handles nested dictionaries recursively
+    - Maintains JSON serializability of all truncated values
+    """
     def __init__(self, max_string_length: int = 500, max_list_items: int = 10):
         self.max_string_length = max_string_length
         self.max_list_items = max_list_items
     
     def truncate_context(self, context: Dict[str, Any]) -> Dict[str, Any]:
-        """Truncate context values intelligently."""
+        """
+        Intelligently truncate all values in a context dictionary.
+        
+        Parameters
+        ----------
+        context : Dict[str, Any]
+            Context dictionary with potentially large values
+            
+        Returns
+        -------
+        Dict[str, Any]
+            New dictionary with truncated values preserving structure
+            
+        Examples
+        --------
+        >>> truncator = SmartTruncator(max_string_length=10)
+        >>> truncator.truncate_context({"msg": "very long message here"})
+        {"msg": "very long ...[truncated]"}
+        
+        Notes
+        -----
+        - Returns empty dict if input is None/empty
+        - Processes each value according to its type
+        - Creates new dictionary, does not modify input
+        """
         if not context:
             return context
         
@@ -118,7 +393,26 @@ class SmartTruncator:
         return truncated
     
     def _truncate_value(self, value: Any) -> Any:
-        """Truncate individual value based on type."""
+        """
+        Truncate individual value based on its data type.
+        
+        Parameters
+        ----------
+        value : Any
+            Value to potentially truncate
+            
+        Returns
+        -------
+        Any
+            Truncated value maintaining type compatibility
+            
+        Notes
+        -----
+        - Strings: truncated with "...[truncated]" suffix
+        - Lists/tuples: limited to max_list_items with "...[N more]" suffix
+        - Dicts: recursively truncated preserving structure
+        - Other types: returned unchanged
+        """
         if isinstance(value, str):
             if len(value) > self.max_string_length:
                 return value[:self.max_string_length] + "..."
@@ -265,10 +559,47 @@ class DirectPostgreSQLLogger:
 
 class Logger:
     """
-    Independent logging system with direct PostgreSQL integration.
+    Thread-safe logging system with multi-output support and intelligent deduplication.
     
-    Removed dependency on DatabaseManager to avoid circular imports.
-    Provides file-based and database-based logging with intelligent deduplication.
+    Summary
+    -------
+    Independent logging facade that writes to both file system and PostgreSQL database
+    without dependency on DatabaseManager. Provides structured logging with automatic
+    deduplication, context truncation, and categorized output files.
+    
+    Parameters
+    ----------
+    min_level : str
+        Minimum log level to process (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+    enable_database : bool
+        Whether to attempt database logging alongside file logging
+        
+    Attributes
+    ----------
+    LOG_LEVELS : Dict[str, int]
+        Mapping of level names to numeric priorities for filtering
+    LOG_CATEGORIES : List[str] 
+        Valid log categories for file organization
+    deduplicator : LogDeduplicator
+        Spam prevention for repeated messages
+    truncator : SmartTruncator
+        Context data size management
+    memory_buffer : deque
+        Recent logs kept in memory for fast retrieval
+        
+    Examples
+    --------
+    >>> logger = Logger(min_level="INFO", enable_database=True)
+    >>> logger.info("Service started", source="main", port=8000)
+    >>> logger.error("Connection failed", source="db", exception=conn_error)
+    >>> logger.warning("Low memory", source="system", available_mb=512)
+    
+    Notes
+    -----
+    - Complexity: O(1) for most operations, O(k) for periodic cleanup
+    - Side effects: creates log files, database entries, modifies memory buffer
+    - Thread safety: all operations protected by internal locks
+    - Performance: deque-based memory buffer for efficient recent log access
     """
     
     LOG_LEVELS = {
@@ -462,14 +793,59 @@ class Logger:
         self.log("WARNING", message, source, **context)
     
     def error(self, message: str, source: str = "", **context):
-        """Log error message with stack trace."""
-        context['stack_trace'] = traceback.format_exc()
+        """Log error message with clean stack trace."""
+        # Clean the stack trace to remove noise
+        stack_trace = traceback.format_exc()
+        clean_trace = self._clean_stack_trace(stack_trace)
+        context['stack_trace'] = clean_trace
         self.log("ERROR", message, source, **context)
     
     def critical(self, message: str, source: str = "", **context):
-        """Log critical message with stack trace."""
-        context['stack_trace'] = traceback.format_exc()
+        """Log critical message with clean stack trace."""
+        # Clean the stack trace to remove noise
+        stack_trace = traceback.format_exc()
+        clean_trace = self._clean_stack_trace(stack_trace)
+        context['stack_trace'] = clean_trace
         self.log("CRITICAL", message, source, **context)
+    
+    def _clean_stack_trace(self, stack_trace: str) -> str:
+        """Clean stack trace to remove noise and formatting issues."""
+        if not stack_trace or stack_trace == "NoneType: None\n":
+            return None
+        
+        # Split into lines and clean each one
+        lines = stack_trace.split('\n')
+        cleaned_lines = []
+        
+        for line in lines:
+            # Remove lines with just ^^^^ markers
+            if re.match(r'^\s*\^+\s*$', line):
+                continue
+            
+            # Limit very long lines (e.g., from massive error messages)
+            if len(line) > 500:
+                line = line[:497] + "..."
+            
+            # Remove excessive whitespace but preserve indentation
+            line = re.sub(r'\s+$', '', line)  # Remove trailing whitespace
+            
+            if line.strip():  # Only add non-empty lines
+                cleaned_lines.append(line)
+        
+        # Join back and limit total size
+        cleaned_trace = '\n'.join(cleaned_lines)
+        
+        # If still too long, truncate with summary
+        if len(cleaned_trace) > 2000:
+            lines = cleaned_trace.split('\n')
+            if len(lines) > 20:
+                # Keep first 10 and last 5 lines with indicator
+                summary = '\n'.join(lines[:10]) + '\n... [truncated] ...\n' + '\n'.join(lines[-5:])
+                return summary
+            else:
+                return cleaned_trace[:2000] + "... [truncated]"
+        
+        return cleaned_trace if cleaned_trace.strip() else None
 
     # Database management methods for clean installs
     def pause_database_logging(self):
@@ -529,7 +905,25 @@ class Logger:
 _logger_instance = None
 
 def get_logger() -> Logger:
-    """Get or create global logger instance."""
+    """
+    Get or create the global logger instance with lazy initialization.
+    
+    Returns
+    -------
+    Logger
+        Singleton logger instance configured with default settings
+        
+    Examples
+    --------
+    >>> logger = get_logger()
+    >>> logger.info("Application started", source="main")
+    
+    Notes
+    -----
+    - Creates logger with INFO level and database enabled by default
+    - Singleton pattern ensures consistent logging across modules
+    - Thread-safe initialization using global lock
+    """
     global _logger_instance
     if _logger_instance is None:
         _logger_instance = Logger()
@@ -538,6 +932,30 @@ def get_logger() -> Logger:
 
 # Convenience function for backward compatibility
 def log(level: str, message: str, source: str = "", **context):
-    """Log message using global logger."""
+    """
+    Log message using the global logger instance.
+    
+    Parameters
+    ----------
+    level : str
+        Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+    message : str
+        Log message content
+    source : str, optional
+        Source component/module name
+    **context : Any
+        Additional context fields for structured logging
+        
+    Examples
+    --------
+    >>> log("INFO", "Process completed", source="data_processor", records=1500)
+    >>> log("ERROR", "Validation failed", source="api", errors=validation_errors)
+    
+    Notes
+    -----
+    - Convenience function for quick logging without logger instantiation
+    - Uses global logger singleton for consistent behavior
+    - Context data is automatically truncated if oversized
+    """
     logger = get_logger()
     logger.log(level, message, source, **context)

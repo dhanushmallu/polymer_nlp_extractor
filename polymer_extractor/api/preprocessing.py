@@ -15,13 +15,14 @@ Endpoints:
 import os
 from typing import Dict, Any, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Query
 from pydantic import BaseModel, Field
 
 from polymer_extractor.services.tei_processing_service import TEIProcessingService
 # Phase 0D: Removed TokenizerService import as tokenization is now handled in training notebook
 from polymer_extractor.services.token_packing_service import TokenPackingService
 from polymer_extractor.utils.logging import Logger
+from polymer_extractor.utils import responses as R
 
 logger = Logger()
 
@@ -42,7 +43,7 @@ class TokenPackRequest(BaseModel):
     """
     tei_path: str = Field(
         ...,
-        description="Absolute filesystem path to cleaned TEI XML file."
+        description="Path to cleaned TEI XML file. Accepts: relative paths, absolute paths, storage paths, or URLs."
     )
 
 
@@ -52,7 +53,7 @@ class TEIProcessRequest(BaseModel):
     """
     tei_path: str = Field(
         ...,
-        description="Absolute filesystem path to the TEI XML file for cleaning and metadata extraction."
+        description="Path to the TEI XML file for cleaning and metadata extraction. Accepts: relative paths, absolute paths, storage paths, or URLs."
     )
 
 
@@ -119,34 +120,79 @@ def preprocess_tei(req: TEIProcessRequest) -> Dict[str, Any]:
         event_type="request_received"
     )
 
-    if not os.path.isabs(req.tei_path) or not os.path.exists(req.tei_path):
-        logger.error(
-            message=f"TEI file not found: {req.tei_path}",
+    # Use flexible path resolution instead of absolute path requirement
+    from polymer_extractor.utils.paths import service_path_handler
+    
+    try:
+        # Determine file type from the input path for proper resolution
+        file_type = "processed_xml"  # Default for TEI processing endpoint
+        
+        # Smart file type detection based on path patterns
+        if req.tei_path.startswith("extracted_xml/"):
+            file_type = "extracted_xml"
+        elif req.tei_path.startswith("processed_xml/"):
+            file_type = "processed_xml"
+        elif "extracted_xml" in req.tei_path:
+            file_type = "extracted_xml"
+        elif "processed_xml" in req.tei_path or "_cleaned" in req.tei_path:
+            file_type = "processed_xml"
+        
+        # Resolve the input path to local filesystem path for processing
+        local_path, storage_path = service_path_handler.resolve_input_path(req.tei_path, file_type)
+        
+        # Check if the local file exists (for actual processing)
+        if not os.path.exists(local_path):
+            logger.error(
+                message=f"TEI file not found at resolved path: {local_path} (from input: {req.tei_path})",
+                source="api.preprocessing.preprocess_tei",
+                category="api",
+                event_type="file_not_found"
+            )
+            raise R.raise_http(404, status_label="failure", message="TEI file not found", details={"input": req.tei_path, "resolved": local_path})
+        
+        logger.info(
+            message=f"Processing TEI file: {req.tei_path} -> {local_path}",
             source="api.preprocessing.preprocess_tei",
             category="api",
-            event_type="file_not_found"
+            event_type="path_resolved"
         )
-        raise HTTPException(status_code=404, detail=f"TEI file not found: {req.tei_path}")
+        
+    except Exception as e:
+        logger.error(
+            message=f"Failed to resolve TEI path: {req.tei_path}",
+            source="api.preprocessing.preprocess_tei",
+            category="api",
+            event_type="path_resolution_failed",
+            error=e
+        )
+        raise R.raise_http(400, status_label="failure", message="Invalid path format", details={"input": req.tei_path})
 
     try:
         service = TEIProcessingService()
-        result = service.process(req.tei_path)
+        # Pass the resolved local path to the service
+        result = service.process(local_path)
+        
+        # Enhance result with path information
+        result["input_path"] = req.tei_path
+        result["resolved_local_path"] = local_path
+        result["resolved_storage_path"] = storage_path
+        
         logger.info(
             message=f"TEI processing completed for {req.tei_path}",
             source="api.preprocessing.preprocess_tei",
             category="api",
-            event_type="request_completed"
+            event_type="request_completed",
         )
-        return result
+        return R.ok(result, message="TEI processing completed")
     except Exception as e:
         logger.error(
             message=f"TEI processing failed: {e}",
             source="api.preprocessing.preprocess_tei",
             error=e,
             category="system",
-            event_type="processing_error"
+            event_type="processing_error",
         )
-        raise HTTPException(status_code=500, detail=f"TEI processing failed: {str(e)}")
+        raise R.raise_http(500, status_label="error", message="TEI processing failed", details={"error": str(e)})
 
 @router.post(
     "/tokenpack",
@@ -180,7 +226,7 @@ def pack_token_windows(req: TokenPackRequest) -> Dict[str, Any]:
             category="api",
             event_type="file_missing"
         )
-        raise HTTPException(status_code=404, detail=f"TEI file not found: {req.tei_path}")
+        raise R.raise_http(404, status_label="failure", message="TEI file not found", details={"path": req.tei_path})
 
     try:
         service = TokenPackingService()
@@ -190,10 +236,9 @@ def pack_token_windows(req: TokenPackRequest) -> Dict[str, Any]:
             message=f"Token packing completed for all models on {req.tei_path}",
             source="api.preprocessing.pack_token_windows",
             category="api",
-            event_type="request_completed"
+            event_type="request_completed",
         )
-
-        return result
+        return R.ok(result, message="Token packing completed")
 
     except Exception as e:
         logger.error(
@@ -203,4 +248,4 @@ def pack_token_windows(req: TokenPackRequest) -> Dict[str, Any]:
             category="system",
             event_type="packing_failed"
         )
-        raise HTTPException(status_code=500, detail=f"Token packing failed: {str(e)}")
+        raise R.raise_http(500, status_label="error", message="Token packing failed", details={"error": str(e)})

@@ -1,36 +1,94 @@
 """
 Enhanced model configurations and hyperparameters for intelligent ensemble operations.
-Provides dynamic thresholding, performance tracking, and adaptive ensemble strategies.
+
+Purpose
+-------
+Defines comprehensive configuration structures, hyperparameters, and ensemble strategies
+for the Polymer NLP Extractor's multi-model inference system. Provides dynamic thresholding,
+performance tracking, and adaptive ensemble voting mechanisms optimized for polymer science
+entity recognition tasks.
+
+Key abstractions
+----------------
+- LABELS: BIO-tagging scheme for polymer entities (PROPERTY, SYMBOL, VALUE, UNIT, POLYMER)
+- EnsembleModel: individual model configuration with expertise weighting and specialization
+- ModelExpertise: domain-specific knowledge encoding for intelligent model selection
+- DynamicThresholds: adaptive confidence thresholds based on ensemble agreement patterns
+- ValidationAdjustments: confidence boosting rules for canonical validation matches
+
+Configuration structure
+-----------------------
+- Base models: PolymerNER (specialized), MatSciBERT, SciBERT, PhysBERT, BioBERT
+- Ensemble strategies: weighted confidence, expert consensus, dynamic thresholding
+- Confidence modes: static, adaptive, performance-based, context-aware
+- Validation integration: canonical matching, unit standardization, pattern recognition
+
+Examples
+--------
+>>> from polymer_extractor.model_config import ENSEMBLE_MODELS, LABEL2ID, EnsembleStrategy
+>>> 
+>>> # Get specialized polymer model configuration
+>>> polymer_model = next(m for m in ENSEMBLE_MODELS if m.name == "PolymerNER")
+>>> polymer_weight = polymer_model.expertise.entity_weights["POLYMER"]  # 2.2
+>>> 
+>>> # Convert labels for model input
+>>> entity_ids = [LABEL2ID[label] for label in ["B-POLYMER", "I-POLYMER"]]
+>>> 
+>>> # Configure ensemble strategy
+>>> strategy = EnsembleStrategy.SEMANTIC_AWARE
+
+Notes
+-----
+- Entity weights reflect model specialization (higher = more reliable for that entity type)
+- Context strengths guide model selection based on document domain/content
+- Preprocessing/postprocessing requirements ensure model-specific data handling
+- Dynamic thresholds adapt based on ensemble agreement and validation feedback
 """
+
 from typing import Dict, List, Any, Optional, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
 import statistics
 import numpy as np
 
-# Enhanced label configuration with semantic groupings
+# Enhanced label configuration with semantic groupings for BIO entity tagging
 LABELS = [
-    "O",
-    "B-PROPERTY", "I-PROPERTY",
-    "B-SYMBOL", "I-SYMBOL",
-    "B-VALUE", "I-VALUE",
-    "B-UNIT", "I-UNIT",
-    "B-POLYMER", "I-POLYMER"
+    "O",                    # Outside entity
+    "B-PROPERTY", "I-PROPERTY",  # Material properties (tensile strength, glass transition, etc.)
+    "B-SYMBOL", "I-SYMBOL",      # Chemical symbols and formulae (Tg, E, σ, etc.)
+    "B-VALUE", "I-VALUE",        # Numerical values (measurements, quantities)
+    "B-UNIT", "I-UNIT",          # Units of measurement (MPa, °C, wt%, etc.)
+    "B-POLYMER", "I-POLYMER"     # Polymer names and chemical identifiers
 ]
 
 LABEL2ID = {label: idx for idx, label in enumerate(LABELS)}
 ID2LABEL = {idx: label for label, idx in LABEL2ID.items()}
 
-# Entity type semantic groupings for intelligent processing
+# Entity type semantic groupings for intelligent processing and validation
 ENTITY_SEMANTIC_GROUPS = {
-    "QUANTITATIVE": ["VALUE", "UNIT", "SYMBOL"],
-    "MATERIAL_RELATED": ["POLYMER"],
-    "DESCRIPTIVE": ["PROPERTY"],
-    "CRITICAL_PAIRS": [("VALUE", "UNIT"), ("PROPERTY", "VALUE"), ("POLYMER", "PROPERTY")]
+    "QUANTITATIVE": ["VALUE", "UNIT", "SYMBOL"],                           # Numerical/measurable entities
+    "MATERIAL_RELATED": ["POLYMER"],                                       # Material identification entities  
+    "DESCRIPTIVE": ["PROPERTY"],                                           # Property description entities
+    "CRITICAL_PAIRS": [("VALUE", "UNIT"), ("PROPERTY", "VALUE"), ("POLYMER", "PROPERTY")]  # Entities that should co-occur
 }
 
 class EnsembleStrategy(Enum):
-    """Ensemble voting strategies."""
+    """
+    Ensemble voting strategies for combining multiple model predictions.
+    
+    Strategies
+    ----------
+    WEIGHTED_CONFIDENCE : str
+        Weight votes by model confidence scores and expertise
+    EXPERT_CONSENSUS : str  
+        Prioritize models with domain expertise for specific entity types
+    DYNAMIC_THRESHOLD : str
+        Adjust confidence thresholds based on ensemble agreement patterns
+    SEMANTIC_AWARE : str
+        Consider semantic relationships between entities in voting
+    ADAPTIVE_VOTING : str
+        Dynamically select strategy based on input characteristics
+    """
     WEIGHTED_CONFIDENCE = "weighted_confidence"
     EXPERT_CONSENSUS = "expert_consensus"
     DYNAMIC_THRESHOLD = "dynamic_threshold"
@@ -38,7 +96,20 @@ class EnsembleStrategy(Enum):
     ADAPTIVE_VOTING = "adaptive_voting"
 
 class ConfidenceMode(Enum):
-    """Confidence calculation modes."""
+    """
+    Confidence calculation modes for ensemble decision making.
+    
+    Modes
+    -----
+    STATIC : str
+        Use fixed confidence thresholds for all predictions
+    ADAPTIVE : str
+        Adjust confidence based on recent ensemble performance
+    PERFORMANCE_BASED : str
+        Weight confidence by historical model accuracy
+    CONTEXT_AWARE : str
+        Modify confidence based on document context and domain
+    """
     STATIC = "static"
     ADAPTIVE = "adaptive"
     PERFORMANCE_BASED = "performance_based"
@@ -46,7 +117,35 @@ class ConfidenceMode(Enum):
 
 @dataclass
 class ModelExpertise:
-    """Advanced model expertise configuration."""
+    """
+    Advanced model expertise configuration for domain-aware ensemble voting.
+    
+    Parameters
+    ----------
+    entity_weights : Dict[str, float]
+        Relative expertise scores for each entity type (1.0 = baseline)
+    context_strengths : Dict[str, float]
+        Domain expertise scores for different scientific contexts
+    reliability_score : float
+        Overall model reliability factor (0.0-1.0+)
+    specialization_domains : List[str]
+        Scientific domains where model shows particular strength
+        
+    Examples
+    --------
+    >>> expertise = ModelExpertise(
+    ...     entity_weights={"POLYMER": 2.0, "PROPERTY": 1.5},
+    ...     context_strengths={"polymer_synthesis": 2.0},
+    ...     reliability_score=0.95,
+    ...     specialization_domains=["polymer_science"]
+    ... )
+    
+    Notes
+    -----
+    - Entity weights > 1.0 indicate above-average expertise
+    - Context strengths guide model selection based on document content
+    - Reliability score modulates overall confidence in model predictions
+    """
     entity_weights: Dict[str, float]
     context_strengths: Dict[str, float] = field(default_factory=dict)
     error_patterns: List[str] = field(default_factory=list)
@@ -55,7 +154,50 @@ class ModelExpertise:
 
 @dataclass
 class EnsembleModel:
-    """Enhanced model configuration for ensemble operations."""
+    """
+    Enhanced model configuration for ensemble operations.
+    
+    Comprehensive configuration for individual models within the ensemble,
+    including performance tracking, dynamic weighting, and specialized
+    preprocessing/postprocessing requirements.
+    
+    Parameters
+    ----------
+    name : str
+        Human-readable model name (e.g., "PolymerNER", "MatSciBERT")
+    model_id : str
+        HuggingFace model identifier or local path
+    base_weight : float
+        Base voting weight in ensemble (1.0 = equal weight)
+    expertise : ModelExpertise
+        Domain expertise configuration for specialized weighting
+    performance_history : Dict[str, List[float]]
+        Historical performance metrics by entity type for adaptive weighting
+    training_config : Dict[str, Any]
+        Model-specific training hyperparameters (lr, epochs, weight_decay)
+    preprocessing_requirements : List[str]
+        Required preprocessing steps before inference
+    postprocessing_steps : List[str]
+        Required postprocessing steps after inference
+        
+    Examples
+    --------
+    >>> expertise = ModelExpertise(entity_weights={"POLYMER": 2.0})
+    >>> model = EnsembleModel(
+    ...     name="PolymerNER",
+    ...     model_id="pranav-s/PolymerNER", 
+    ...     base_weight=1.6,
+    ...     expertise=expertise,
+    ...     preprocessing_requirements=["polymer_canonicalization"]
+    ... )
+    >>> weight = model.get_dynamic_weight("POLYMER", "polymer_synthesis")
+    
+    Notes
+    -----
+    - Base weight represents model's general reliability in ensemble
+    - Performance history enables adaptive weight adjustment based on recent accuracy
+    - Preprocessing/postprocessing requirements ensure model-specific data handling
+    """
     name: str
     model_id: str
     base_weight: float
@@ -66,7 +208,37 @@ class EnsembleModel:
     postprocessing_steps: List[str] = field(default_factory=list)
 
     def get_dynamic_weight(self, entity_type: str, context: str = "general") -> float:
-        """Calculate dynamic weight based on expertise and performance."""
+        """
+        Calculate dynamic weight based on expertise and performance history.
+        
+        Combines base weight with entity-specific expertise, context awareness,
+        and recent performance metrics to determine optimal voting weight for
+        a specific prediction task.
+        
+        Parameters
+        ----------
+        entity_type : str
+            Target entity type (POLYMER, PROPERTY, VALUE, UNIT, SYMBOL)
+        context : str
+            Document/content context for domain-specific weighting
+            
+        Returns
+        -------
+        float
+            Dynamic weight for this model in ensemble voting
+            
+        Examples
+        --------
+        >>> model.get_dynamic_weight("POLYMER", "polymer_synthesis")
+        2.4  # Base 1.6 * expertise 2.2 * context 1.8 * reliability 0.95 * performance 1.1
+        
+        Notes
+        -----
+        - Weight increases for entity types where model shows expertise
+        - Context multiplier enhances weight for relevant document domains  
+        - Performance factor adjusts based on recent accuracy (capped at ±20%)
+        - Final weight combines all factors multiplicatively
+        """
         base = self.base_weight
         expertise_multiplier = self.expertise.entity_weights.get(entity_type, 1.0)
         context_multiplier = self.expertise.context_strengths.get(context, 1.0)

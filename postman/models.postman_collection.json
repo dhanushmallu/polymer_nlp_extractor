@@ -1,0 +1,580 @@
+{
+    "info": {
+        "name": "Polymer NLP Extractor - Models Sync API",
+        "description": "Comprehensive Models Synchronization API collection for GitHub-based models and tokenizers management without authentication",
+        "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+        "_postman_id": "polymer-models-api-2024",
+        "version": {
+            "major": 2,
+            "minor": 0,
+            "patch": 0
+        }
+    },
+    "variable": [
+        {
+            "key": "pnlp",
+            "value": "http://localhost:8000",
+            "description": "Base URL for Polymer NLP Extractor API"
+        }
+    ],
+    "item": [
+        {
+            "name": "Models Status & Monitoring",
+            "description": "Monitor models directory and sync configuration status",
+            "item": [
+                {
+                    "name": "Get Models Status",
+                    "request": {
+                        "method": "GET",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{pnlp}}/api/models/status",
+                            "host": ["{{pnlp}}"],
+                            "path": ["api", "models", "status"]
+                        },
+                        "description": "Get current status of models directory and GitHub sync configuration. Provides comprehensive status information about the current models directory, GitHub configuration, and sync readiness. Useful for debugging and monitoring."
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Validate Models Versions",
+                    "request": {
+                        "method": "GET",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{pnlp}}/api/models/validate",
+                            "host": ["{{pnlp}}"],
+                            "path": ["api", "models", "validate"]
+                        },
+                        "description": "Validate version compatibility between existing models and tokenizers. Checks all models and tokenizers in the models directory for version compatibility and structural completeness. Provides detailed analysis of each model-tokenizer pair."
+                    },
+                    "response": []
+                }
+            ]
+        },
+        {
+            "name": "Models Synchronization",
+            "description": "Core models sync operations from GitHub repositories",
+            "item": [
+                {
+                    "name": "Sync Models (Safe)",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"force_redownload\": false\n}"
+                        },
+                        "url": {
+                            "raw": "{{pnlp}}/api/models/sync",
+                            "host": ["{{pnlp}}"],
+                            "path": ["api", "models", "sync"]
+                        },
+                        "description": "Safe synchronization of models and tokenizers from GitHub repositories. Downloads latest models and tokenizers from configured GitHub repositories, validates version compatibility, and updates local models directory atomically. Only downloads if not already present."
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Sync Models (Force Redownload)",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"force_redownload\": true\n}"
+                        },
+                        "url": {
+                            "raw": "{{pnlp}}/api/models/sync",
+                            "host": ["{{pnlp}}"],
+                            "path": ["api", "models", "sync"]
+                        },
+                        "description": "Force redownload and synchronization of models and tokenizers from GitHub repositories. Downloads latest models and tokenizers even if they already exist locally. Useful for updating to latest versions or recovering from corruption."
+                    },
+                    "response": []
+                }
+            ]
+        },
+        {
+            "name": "Development Workflows",
+            "description": "Common development workflow sequences for models management",
+            "item": [
+                {
+                    "name": "Quick Models Setup Sequence",
+                    "description": "Run this sequence for typical models setup and validation",
+                    "item": [
+                        {
+                            "name": "1. Check Models Status",
+                            "request": {
+                                "method": "GET",
+                                "header": [
+                                    {
+                                        "key": "Content-Type",
+                                        "value": "application/json"
+                                    }
+                                ],
+                                "url": {
+                                    "raw": "{{pnlp}}/api/models/status",
+                                    "host": ["{{pnlp}}"],
+                                    "path": ["api", "models", "status"]
+                                },
+                                "description": "Check initial models status and GitHub configuration"
+                            },
+                            "response": []
+                        },
+                        {
+                            "name": "2. Sync Models (Safe)",
+                            "request": {
+                                "method": "POST",
+                                "header": [
+                                    {
+                                        "key": "Content-Type",
+                                        "value": "application/json"
+                                    }
+                                ],
+                                "body": {
+                                    "mode": "raw",
+                                    "raw": "{\n    \"force_redownload\": false\n}"
+                                },
+                                "url": {
+                                    "raw": "{{pnlp}}/api/models/sync",
+                                    "host": ["{{pnlp}}"],
+                                    "path": ["api", "models", "sync"]
+                                },
+                                "description": "Safe models synchronization"
+                            },
+                            "response": []
+                        },
+                        {
+                            "name": "3. Validate Models After Sync",
+                            "request": {
+                                "method": "GET",
+                                "header": [
+                                    {
+                                        "key": "Content-Type",
+                                        "value": "application/json"
+                                    }
+                                ],
+                                "url": {
+                                    "raw": "{{pnlp}}/api/models/validate",
+                                    "host": ["{{pnlp}}"],
+                                    "path": ["api", "models", "validate"]
+                                },
+                                "description": "Validate models versions after sync"
+                            },
+                            "response": []
+                        },
+                        {
+                            "name": "4. Check Final Models Status",
+                            "request": {
+                                "method": "GET",
+                                "header": [
+                                    {
+                                        "key": "Content-Type",
+                                        "value": "application/json"
+                                    }
+                                ],
+                                "url": {
+                                    "raw": "{{pnlp}}/api/models/status",
+                                    "host": ["{{pnlp}}"],
+                                    "path": ["api", "models", "status"]
+                                },
+                                "description": "Verify final models status after sync and validation"
+                            },
+                            "response": []
+                        }
+                    ]
+                },
+                {
+                    "name": "Models Recovery Sequence",
+                    "description": "Recovery workflow for corrupted or missing models",
+                    "item": [
+                        {
+                            "name": "1. Check Current Models Status",
+                            "request": {
+                                "method": "GET",
+                                "header": [
+                                    {
+                                        "key": "Content-Type",
+                                        "value": "application/json"
+                                    }
+                                ],
+                                "url": {
+                                    "raw": "{{pnlp}}/api/models/status",
+                                    "host": ["{{pnlp}}"],
+                                    "path": ["api", "models", "status"]
+                                },
+                                "description": "Check models status before recovery"
+                            },
+                            "response": []
+                        },
+                        {
+                            "name": "2. Validate Existing Models",
+                            "request": {
+                                "method": "GET",
+                                "header": [
+                                    {
+                                        "key": "Content-Type",
+                                        "value": "application/json"
+                                    }
+                                ],
+                                "url": {
+                                    "raw": "{{pnlp}}/api/models/validate",
+                                    "host": ["{{pnlp}}"],
+                                    "path": ["api", "models", "validate"]
+                                },
+                                "description": "Validate existing models to identify issues"
+                            },
+                            "response": []
+                        },
+                        {
+                            "name": "3. Force Redownload Models",
+                            "request": {
+                                "method": "POST",
+                                "header": [
+                                    {
+                                        "key": "Content-Type",
+                                        "value": "application/json"
+                                    }
+                                ],
+                                "body": {
+                                    "mode": "raw",
+                                    "raw": "{\n    \"force_redownload\": true\n}"
+                                },
+                                "url": {
+                                    "raw": "{{pnlp}}/api/models/sync",
+                                    "host": ["{{pnlp}}"],
+                                    "path": ["api", "models", "sync"]
+                                },
+                                "description": "Force redownload all models to recover from corruption"
+                            },
+                            "response": []
+                        },
+                        {
+                            "name": "4. Validate After Recovery",
+                            "request": {
+                                "method": "GET",
+                                "header": [
+                                    {
+                                        "key": "Content-Type",
+                                        "value": "application/json"
+                                    }
+                                ],
+                                "url": {
+                                    "raw": "{{pnlp}}/api/models/validate",
+                                    "host": ["{{pnlp}}"],
+                                    "path": ["api", "models", "validate"]
+                                },
+                                "description": "Validate models after recovery to ensure integrity"
+                            },
+                            "response": []
+                        },
+                        {
+                            "name": "5. Check Recovery Status",
+                            "request": {
+                                "method": "GET",
+                                "header": [
+                                    {
+                                        "key": "Content-Type",
+                                        "value": "application/json"
+                                    }
+                                ],
+                                "url": {
+                                    "raw": "{{pnlp}}/api/models/status",
+                                    "host": ["{{pnlp}}"],
+                                    "path": ["api", "models", "status"]
+                                },
+                                "description": "Verify recovery status after force redownload"
+                            },
+                            "response": []
+                        }
+                    ]
+                },
+                {
+                    "name": "Models Configuration Testing",
+                    "description": "Test GitHub configuration and connectivity",
+                    "item": [
+                        {
+                            "name": "1. Check GitHub Configuration",
+                            "request": {
+                                "method": "GET",
+                                "header": [
+                                    {
+                                        "key": "Content-Type",
+                                        "value": "application/json"
+                                    }
+                                ],
+                                "url": {
+                                    "raw": "{{pnlp}}/api/models/status",
+                                    "host": ["{{pnlp}}"],
+                                    "path": ["api", "models", "status"]
+                                },
+                                "description": "Check if GitHub configuration is properly set"
+                            },
+                            "response": []
+                        },
+                        {
+                            "name": "2. Test Sync Without Force",
+                            "request": {
+                                "method": "POST",
+                                "header": [
+                                    {
+                                        "key": "Content-Type",
+                                        "value": "application/json"
+                                    }
+                                ],
+                                "body": {
+                                    "mode": "raw",
+                                    "raw": "{\n    \"force_redownload\": false\n}"
+                                },
+                                "url": {
+                                    "raw": "{{pnlp}}/api/models/sync",
+                                    "host": ["{{pnlp}}"],
+                                    "path": ["api", "models", "sync"]
+                                },
+                                "description": "Test sync operation to verify GitHub connectivity"
+                            },
+                            "response": []
+                        },
+                        {
+                            "name": "3. Validate Configuration Results",
+                            "request": {
+                                "method": "GET",
+                                "header": [
+                                    {
+                                        "key": "Content-Type",
+                                        "value": "application/json"
+                                    }
+                                ],
+                                "url": {
+                                    "raw": "{{pnlp}}/api/models/validate",
+                                    "host": ["{{pnlp}}"],
+                                    "path": ["api", "models", "validate"]
+                                },
+                                "description": "Validate results of configuration test"
+                            },
+                            "response": []
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "Error Scenarios Testing",
+            "description": "Test error handling and edge cases",
+            "item": [
+                {
+                    "name": "Test Sync Without GitHub Token",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"force_redownload\": false\n}"
+                        },
+                        "url": {
+                            "raw": "{{pnlp}}/api/models/sync",
+                            "host": ["{{pnlp}}"],
+                            "path": ["api", "models", "sync"]
+                        },
+                        "description": "Test sync operation when GitHub configuration is missing. Should return 422 with configuration error details."
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Test Status with No Models",
+                    "request": {
+                        "method": "GET",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{pnlp}}/api/models/status",
+                            "host": ["{{pnlp}}"],
+                            "path": ["api", "models", "status"]
+                        },
+                        "description": "Test status endpoint when no models are present in the directory."
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Test Validation with Empty Directory",
+                    "request": {
+                        "method": "GET",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{pnlp}}/api/models/validate",
+                            "host": ["{{pnlp}}"],
+                            "path": ["api", "models", "validate"]
+                        },
+                        "description": "Test validation endpoint when models directory is empty or missing."
+                    },
+                    "response": []
+                }
+            ]
+        }
+    ],
+    "auth": {
+        "type": "noauth"
+    },
+    "event": [
+        {
+            "listen": "prerequest",
+            "script": {
+                "type": "text/javascript",
+                "exec": [
+                    "// Set default variables if not already set",
+                    "if (!pm.collectionVariables.get('pnlp')) {",
+                    "    pm.collectionVariables.set('pnlp', 'http://localhost:8000');",
+                    "}"
+                ]
+            }
+        },
+        {
+            "listen": "test",
+            "script": {
+                "type": "text/javascript",
+                "exec": [
+                    "// Basic response validation for models API",
+                    "pm.test('Status code should be appropriate for models operations', function () {",
+                    "    // 200 for successful GET operations",
+                    "    // 200/201 for successful POST operations", 
+                    "    // 422 for configuration errors (missing GitHub token, etc.)",
+                    "    // 500 for internal server errors",
+                    "    const expectedCodes = [200, 201, 422, 500];",
+                    "    pm.expect(expectedCodes).to.include(pm.response.code);",
+                    "});",
+                    "",
+                    "// Check for JSON response",
+                    "pm.test('Response should be JSON', function () {",
+                    "    pm.expect(pm.response.headers.get('Content-Type')).to.include('application/json');",
+                    "});",
+                    "",
+                    "// Parse and validate response structure based on endpoint",
+                    "pm.test('Response has expected structure for models API', function () {",
+                    "    const responseJson = pm.response.json();",
+                    "    const url = pm.request.url.toString();",
+                    "    ",
+                    "    // Models sync endpoint validation",
+                    "    if (url.includes('/api/models/sync') && pm.request.method === 'POST') {",
+                    "        if (pm.response.code === 200) {",
+                    "            pm.expect(responseJson).to.have.property('success');",
+                    "            pm.expect(responseJson).to.have.property('models_synced');",
+                    "            pm.expect(responseJson).to.have.property('tokenizers_synced');",
+                    "            pm.expect(responseJson).to.have.property('version_validated');",
+                    "            pm.expect(responseJson).to.have.property('duration_seconds');",
+                    "        } else if (pm.response.code === 422) {",
+                    "            pm.expect(responseJson).to.have.property('detail');",
+                    "            pm.expect(responseJson.detail).to.have.property('message');",
+                    "            pm.expect(responseJson.detail).to.have.property('errors');",
+                    "        }",
+                    "    }",
+                    "    ",
+                    "    // Models status endpoint validation",
+                    "    if (url.includes('/api/models/status') && pm.request.method === 'GET') {",
+                    "        pm.expect(responseJson).to.have.property('models_directory_exists');",
+                    "        pm.expect(responseJson).to.have.property('models_count');",
+                    "        pm.expect(responseJson).to.have.property('tokenizers_count');",
+                    "        pm.expect(responseJson).to.have.property('github_configured');",
+                    "        pm.expect(responseJson).to.have.property('sync_ready');",
+                    "        pm.expect(responseJson).to.have.property('configuration_status');",
+                    "    }",
+                    "    ",
+                    "    // Models validation endpoint validation",
+                    "    if (url.includes('/api/models/validate') && pm.request.method === 'GET') {",
+                    "        pm.expect(responseJson).to.have.property('valid');",
+                    "        pm.expect(responseJson).to.have.property('models_checked');",
+                    "        pm.expect(responseJson).to.have.property('compatible_pairs');",
+                    "        pm.expect(responseJson).to.have.property('incompatible_pairs');",
+                    "    }",
+                    "});",
+                    "",
+                    "// Specific validation for successful sync operations",
+                    "pm.test('Successful sync should have proper counts', function () {",
+                    "    const responseJson = pm.response.json();",
+                    "    const url = pm.request.url.toString();",
+                    "    ",
+                    "    if (url.includes('/api/models/sync') && pm.response.code === 200 && responseJson.success) {",
+                    "        pm.expect(responseJson.models_synced).to.be.a('number');",
+                    "        pm.expect(responseJson.tokenizers_synced).to.be.a('number');",
+                    "        pm.expect(responseJson.duration_seconds).to.be.a('number');",
+                    "        pm.expect(responseJson.duration_seconds).to.be.above(0);",
+                    "    }",
+                    "});",
+                    "",
+                    "// Configuration error detection",
+                    "pm.test('Configuration errors should provide helpful details', function () {",
+                    "    const responseJson = pm.response.json();",
+                    "    ",
+                    "    if (pm.response.code === 422) {",
+                    "        pm.expect(responseJson.detail.errors).to.be.an('array');",
+                    "        pm.expect(responseJson.detail.errors.length).to.be.above(0);",
+                    "        pm.expect(responseJson.detail.message).to.include('configuration');",
+                    "    }",
+                    "});",
+                    "",
+                    "// Log response for debugging",
+                    "console.log('Models API Response Status:', pm.response.status);",
+                    "console.log('Models API Response Time:', pm.response.responseTime + 'ms');",
+                    "",
+                    "// Log response body for non-successful operations or POST operations",
+                    "if (pm.response.code !== 200 || pm.request.method === 'POST') {",
+                    "    console.log('Models API Response Body:', JSON.stringify(pm.response.json(), null, 2));",
+                    "}",
+                    "",
+                    "// Set environment variables for chaining requests",
+                    "if (pm.response.code === 200) {",
+                    "    const responseJson = pm.response.json();",
+                    "    const url = pm.request.url.toString();",
+                    "    ",
+                    "    // Store models count for use in subsequent requests",
+                    "    if (url.includes('/api/models/status')) {",
+                    "        pm.collectionVariables.set('models_count', responseJson.models_count);",
+                    "        pm.collectionVariables.set('tokenizers_count', responseJson.tokenizers_count);",
+                    "        pm.collectionVariables.set('github_configured', responseJson.github_configured);",
+                    "    }",
+                    "    ",
+                    "    // Store sync results for validation",
+                    "    if (url.includes('/api/models/sync') && responseJson.success) {",
+                    "        pm.collectionVariables.set('last_sync_models', responseJson.models_synced);",
+                    "        pm.collectionVariables.set('last_sync_tokenizers', responseJson.tokenizers_synced);",
+                    "        pm.collectionVariables.set('last_sync_validated', responseJson.version_validated);",
+                    "    }",
+                    "}"
+                ]
+            }
+        }
+    ]
+}

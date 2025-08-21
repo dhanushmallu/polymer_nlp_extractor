@@ -5,12 +5,12 @@ EvaluationService for Polymer NLP Extractor.
 
 Features:
 ---------
-- Finds matching testing dataset from Appwrite (exact or fuzzy filename match)
+- Finds matching testing dataset from storage (exact or fuzzy filename match)
 - Downloads dataset and loads ground-truth entities
-- Loads ensemble inference results (local JSON preferred, fallback to Appwrite)
+- Loads ensemble inference results (local JSON preferred, fallback to storage)
 - Aligns predictions and ground truth into a comparable long format
 - Computes precision, recall, F1, and accuracy
-- Saves evaluation metrics into models_metadata and full CSV in model_results bucket
+- Saves evaluation metrics into models_metadata and full CSV in model_results storage
 
 Author: Dhanush Mallu <dhanush@example.com>
 """
@@ -23,14 +23,15 @@ from typing import Dict, Any, List, Tuple
 
 import pandas as pd
 
-from polymer_extractor.storage.bucket_manager import BucketManager
+from polymer_extractor.storage.bucket_client import get_bucket_client, BucketClient
 from polymer_extractor.storage.database_manager import DatabaseManager
+from polymer_extractor.utils.paths import get_storage_path, get_local_path, WORKSPACE_DIR
+from polymer_extractor.utils.paths import path_resolver
 from polymer_extractor.utils.logging import Logger
-from polymer_extractor.utils.paths import WORKSPACE_DIR
 
 logger = Logger()
 db = DatabaseManager()
-bucket = BucketManager()
+bucket = BucketClient()
 
 
 class EvaluationService:
@@ -106,7 +107,7 @@ class EvaluationService:
         }
 
     def _find_matching_dataset(self, file_stem: str) -> Dict[str, Any]:
-        """Find dataset entry in Appwrite matching the file name or fuzzy match."""
+        """Find dataset entry in storage matching the file name or fuzzy match."""
         datasets = db.list_records(self.datasets_collection)
         candidates = [d for d in datasets if d.get("type") == "testing"]
 
@@ -129,7 +130,9 @@ class EvaluationService:
         os.makedirs(local_path.parent, exist_ok=True)
 
         try:
-            bucket.download_file("datasets_bucket", file_url, str(local_path))
+            content = bucket.download_file(file_path=f"datasets/{file_name}")
+            with open(local_path, 'wb') as f:
+                f.write(content)
             return str(local_path)
         except Exception as e:
             logger.error(f"Failed to download dataset: {e}",
@@ -137,7 +140,7 @@ class EvaluationService:
             raise
 
     def _load_predictions(self, base_name: str) -> Dict[str, Any]:
-        """Load ensemble inference results (local JSON preferred, fallback Appwrite)."""
+        """Load ensemble inference results (local JSON preferred, fallback storage)."""
         local_json = self.results_dir / f"{base_name}_ensemble_results.json"
         if local_json.exists():
             with open(local_json, "r", encoding="utf-8") as f:
@@ -237,14 +240,21 @@ class EvaluationService:
     def _save_to_metadata(self, base_name: str, metrics: Dict[str, Any], csv_path: Path):
         """Save evaluation metrics to models_metadata and upload CSV."""
         try:
-            bucket_id = "model_results_bucket"
-            bucket.create_bucket(bucket_id, "Model evaluation results")
-            uploaded = bucket.upload_file(bucket_id, str(csv_path))
+            # Upload the CSV file
+            with open(csv_path, 'rb') as f:
+                content = f.read()
+            upload_result = bucket.upload_file(
+                file_path=get_storage_path("reports", csv_path.name),
+                content=content,
+                metadata={"source": "evaluation", "metrics": json.dumps(metrics)}
+            )
 
+            # Create metadata record
             db.create_record("models_metadata", {
                 "file_name": base_name,
                 "metrics": json.dumps(metrics),
-                "results_csv": uploaded.get("$id", ""),
+                "results_csv_path": get_storage_path("reports", csv_path.name) if upload_result.get("success") else "",
+                "upload_success": upload_result.get("success", False),
                 "timestamp": pd.Timestamp.now().isoformat()
             })
 

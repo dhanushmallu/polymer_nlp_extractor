@@ -1,46 +1,72 @@
 """
-Database Manager for Polymer NLP Extractor.
+polymer_extractor/storage/database_manager.py
+
+PostgreSQL-focused database operations manager with resource locking and legacy compatibility.
 
 Purpose
 -------
-Relational database operations layer for PostgreSQL with backward compatibility support.
-Graph operations (Neo4j) are handled separately by GraphManager in graph_manager.py
+Provides comprehensive relational database operations for PostgreSQL with:
+- Universal CRUD operations (create_record, get_record, update_record, delete_record)
+- Intelligent resource locking for concurrent access management
+- Batch operations (bulk_insert, bulk_update, bulk_delete)
+- Search and filtering capabilities
+- Table management (create_table, drop_table, list_tables)
+- Legacy compatibility for Appwrite-style method names
+- Environment-driven configuration and feature flags
 
-The manager provides universal method names for PostgreSQL operations and maintains
-backward compatibility for legacy code that expects Appwrite-style method signatures.
+Key Abstractions
+----------------
+- DatabaseManager: High-level interface for PostgreSQL operations with resource locking
+- Universal methods: Consistent naming across all database operations
+- Resource locks: Intelligent conflict resolution for concurrent database access
+- Legacy compatibility: Backward-compatible method aliases for existing code
+- Table operations: Schema management and introspection
+- Batch processing: Efficient bulk operations for large datasets
 
-Environment Variables
----------------------
-Required for database operations:
-- USE_POSTGRESQL_DB=true/false - Enable/disable PostgreSQL database operations
-- DATA_BACKEND=postgres - Should be set to postgres for this simplified version
-
-Design Principles
+Design Invariants
 -----------------
-1. PostgreSQL-first design with clear error messages when disabled
-2. Universal method names (create_record, get_record, etc.) for consistency
-3. Comprehensive error handling and logging
-4. Backward compatibility via deprecated method mapping
-5. Integration with model_config.py entity types and validation patterns
-6. SEPARATION: Graph operations handled by GraphManager, not this class
+- PostgreSQL-first design with clear error messages when disabled
+- Separation of concerns: Graph operations handled by GraphManager
+- Environment-based feature flags control database backend selection
+- Comprehensive error handling with structured logging
+- Backward compatibility maintained without breaking existing services
+
+Environment Integration
+----------------------
+Uses environment variables for configuration:
+- USE_POSTGRESQL_DB: Enable/disable PostgreSQL database operations
+- DATA_BACKEND: Control primary database backend selection
 
 Examples
 --------
 >>> from polymer_extractor.storage.database_manager import DatabaseManager
 >>> db = DatabaseManager()
->>> result = db.create_record("research_papers", {"title": "Polymer Study", "doi": "10.1234/test"})
->>> # Uses PostgreSQL backend
+>>> 
+>>> # CRUD operations
+>>> record = db.create_record("research_papers", {"title": "Study", "doi": "10.1234/test"})
+>>> paper = db.get_record("research_papers", record["id"])
+>>> db.update_record("research_papers", record["id"], {"status": "published"})
+>>> db.delete_record("research_papers", record["id"])
+>>> 
+>>> # Batch operations
+>>> records = [{"title": f"Paper {i}", "doi": f"10.1234/{i}"} for i in range(100)]
+>>> results = db.bulk_insert("research_papers", records)
+>>> 
+>>> # Search and filtering
+>>> papers = db.search_records("research_papers", "polymer", ["title", "abstract"])
+>>> filtered = db.list_records("research_papers", {"status": "published"}, limit=50)
+>>> 
+>>> # Legacy compatibility (existing code continues to work)
+>>> document = db.create_document("papers", data)  # Maps to create_record
+>>> documents = db.list_documents("papers")        # Maps to list_records
 
->>> # For graph operations, use GraphManager:
->>> from polymer_extractor.storage.graph_manager import GraphManager
->>> graph = GraphManager()
->>> graph.create_polymer_entity("PDMS", {"molecular_weight": 10000})
-
-Legacy Compatibility
---------------------
-Existing code continues to work:
->>> db.create_record("collection", data)  # Maps to create_record()
->>> db.list_records("collection")         # Maps to list_records()
+Notes
+-----
+- Performance: Optimized bulk operations with PostgreSQL COPY for large datasets
+- Thread Safety: Resource locking ensures safe concurrent access
+- Memory: Streaming results for large queries to minimize memory usage
+- Complexity: O(1) for single operations, O(n) for bulk and search operations
+- Conflict Resolution: User-friendly error messages for resource conflicts
 """
 
 import os
@@ -49,40 +75,110 @@ from typing import Dict, Any, List, Optional, Union
 from pathlib import Path
 
 from polymer_extractor.storage.postgresql_client import PostgresClient
-from polymer_extractor.utils.logging import Logger
+from polymer_extractor.utils.logging import get_logger
+from polymer_extractor.utils.resource_lock_manager import (
+    get_resource_lock_manager, LockType, ResourceLockConflict
+)
 
-logger = Logger()
+logger = get_logger()
 
 
 class DatabaseManager:
     """
-    PostgreSQL database operations manager with backward compatibility support.
+    PostgreSQL database operations manager with comprehensive CRUD and batch capabilities.
     
-    Provides PostgreSQL-based CRUD operations with universal method names.
-    Maintains backward compatibility for legacy code expecting Appwrite-style methods.
-    
-    Note: Graph database operations (Neo4j) are handled by GraphManager in graph_manager.py
+    Summary
+    -------
+    Provides PostgreSQL-first database operations with universal method naming,
+    legacy compatibility, and environment-driven configuration.
+
+    Key Features
+    ------------
+    - Universal CRUD: create_record, get_record, update_record, delete_record
+    - Batch operations: bulk_insert, bulk_update, bulk_delete  
+    - Advanced queries: search_records with full-text search capabilities
+    - Table management: create_table, drop_table, list_tables, table_exists
+    - Legacy compatibility: Appwrite-style method aliases (create_document, etc.)
+    - Environment flags: Controlled by USE_POSTGRESQL_DB and DATA_BACKEND
+
+    Examples
+    --------
+    >>> db = DatabaseManager()
+    >>> # Basic CRUD
+    >>> record = db.create_record("papers", {"title": "Study", "doi": "10.1234"})
+    >>> paper = db.get_record("papers", record["id"])
+    >>> 
+    >>> # Batch operations  
+    >>> papers = [{"title": f"Paper {i}"} for i in range(100)]
+    >>> results = db.bulk_insert("papers", papers)
+    >>> 
+    >>> # Search and filtering
+    >>> found = db.search_records("papers", "polymer", ["title", "abstract"])
+
+    Notes
+    -----
+    - Complexity: O(1) single ops, O(n) bulk ops, O(log n) indexed searches
+    - Thread Safety: Individual operations thread-safe via connection pooling
+    - Memory: Streaming for large result sets to minimize memory usage
+    - Error Handling: Comprehensive exception propagation with context
     """
 
     def __init__(self):
-        """Initialize PostgreSQL client based on environment configuration."""
-        # NOTE: Cannot use Logger here due to circular dependency (Logger -> DatabaseManager -> Logger)
-        # Use simple print statements for initialization logging
-        
-        # Initialize PostgreSQL client
+        """
+        Initialize DatabaseManager with PostgreSQL client and resource locking.
+
+        Summary
+        -------
+        Creates DatabaseManager instance with PostgreSQL connection and resource locking
+        if enabled via environment flags.
+
+        Raises
+        ------
+        RuntimeError
+            If PostgreSQL initialization fails when enabled
+        ConfigError
+            If required PostgreSQL environment variables are missing
+
+        Examples
+        --------
+        >>> db = DatabaseManager()  # Uses .env configuration
+        >>> if db.postgres_client:
+        ...     health = db.postgres_client.health_check()
+
+        Notes
+        -----
+        - Performance: O(1) - Establishes connection pool and lock manager during initialization
+        - Side Effects: Logs PostgreSQL connection status and lock manager availability
+        - Thread Safety: Resource locking prevents concurrent modification conflicts
+        """
         self.postgres_client = None
+        self.lock_manager = None
+        self.enable_locking = os.getenv("RESOURCE_LOCK_ENABLE", "true").lower() == "true"
         
-        # Initialize PostgreSQL if enabled
+        # Initialize PostgreSQL client if enabled
         if self._should_use_postgres():
             try:
                 self.postgres_client = PostgresClient()
-                print("[DATABASE_MANAGER] PostgreSQL database client initialized")
+                logger.info("DatabaseManager initialized with PostgreSQL support", 
+                          source="database_manager", event_type="init")
             except Exception as e:
-                print(f"[DATABASE_MANAGER] Failed to initialize PostgreSQL client: {e}")
-                
-        # Validate PostgreSQL is available
-        if not self.postgres_client:
-            print("[DATABASE_MANAGER] PostgreSQL not available - check environment configuration and server status")
+                logger.error(f"Failed to initialize PostgreSQL client: {e}", 
+                           source="database_manager", event_type="init_error")
+                raise RuntimeError(f"PostgreSQL initialization failed: {e}")
+        else:
+            logger.info("DatabaseManager initialized without PostgreSQL (disabled in environment)", 
+                      source="database_manager", event_type="init")
+        
+        # Initialize resource lock manager if enabled
+        if self.enable_locking:
+            try:
+                self.lock_manager = get_resource_lock_manager()
+                logger.info("DatabaseManager initialized with resource locking support", 
+                          source="database_manager", event_type="init")
+            except Exception as e:
+                logger.warning(f"Failed to initialize resource lock manager: {e}", 
+                             source="database_manager", event_type="init_warning")
+                self.enable_locking = False
 
     def _should_use_postgres(self) -> bool:
         """Check if PostgreSQL should be used based on .env flags."""
@@ -102,36 +198,83 @@ class DatabaseManager:
     # === Universal CRUD Operations ===
     def create_record(self, table_name: str, data: Dict[str, Any], record_id: Optional[str] = None) -> Dict[str, Any]:
         """
-        Create record in PostgreSQL database.
-        
+        Create a new record in the specified PostgreSQL table.
+
+        Summary
+        -------
+        Inserts new record with auto-generated ID and timestamp metadata.
+
         Parameters
         ----------
         table_name : str
-            Table name
-        data : dict
-            Record data to create
-        record_id : str, optional
-            Specific record ID (ignored for PostgreSQL as it uses auto-increment)
-            
+            Target table name (e.g., "datasets_metadata", "extraction_metadata")
+        data : Dict[str, Any]
+            Record data with column-value pairs
+        record_id : Optional[str], default None
+            Ignored for PostgreSQL - uses auto-increment primary key
+
         Returns
         -------
-        dict
-            Created record details
+        Dict[str, Any]
+            Created record including generated ID and timestamps
+
+        Raises
+        ------
+        DatabaseError
+            If table doesn't exist or data violates constraints
+        ValidationError
+            If required fields are missing or invalid types
+
+        Examples
+        --------
+        >>> db = DatabaseManager()
+        >>> record = db.create_record("datasets_metadata", {
+        ...     "name": "training_set_v1",
+        ...     "file_path": "datasets/train.json",
+        ...     "size": 1024
+        ... })
+        >>> print(f"Created record with ID: {record['id']}")
+
+        Notes
+        -----
+        - Complexity: O(1) for single record insertion
+        - Side Effects: Auto-generates timestamps, logs operation
+        - Thread Safety: Resource locking prevents concurrent modification conflicts
+        - Resource Locking: Acquires write lock on table during operation
         """
         self._ensure_postgres_available()
         
-        try:
+        # Acquire write lock for table modification
+        resource_id = f"database/table/{table_name}"
+        lock_metadata = {
+            "operation": "create_record",
+            "table_name": table_name,
+            "user_context": "database_manager"
+        }
+        
+        if self.enable_locking and self.lock_manager:
+            try:
+                with self.lock_manager.acquire_lock(resource_id, LockType.WRITE, 
+                                                  timeout=30, metadata=lock_metadata) as lock:
+                    result = self._create_postgres_record(table_name, data)
+                    logger.info(f"Record created successfully in {table_name} (with lock {lock.lock_id})", 
+                              source="database_manager", event_type="create_record")
+                    return result
+                    
+            except ResourceLockConflict as e:
+                logger.warning(f"Resource conflict while creating record in {table_name}: {e.user_message}",
+                             source="database_manager", event_type="create_record_conflict")
+                raise RuntimeError(f"Cannot create record in {table_name}: {e.user_message}")
+        else:
+            # Fallback without locking
             result = self._create_postgres_record(table_name, data)
-            logger.info(f"Record created successfully in {table_name}", source="database_manager", event_type="create_record")
+            logger.info(f"Record created successfully in {table_name} (no locking)", 
+                      source="database_manager", event_type="create_record")
             return result
-            
-        except Exception as e:
-            logger.error(f"Failed to create record in {table_name}: {e}", source="database_manager", event_type="create_record")
-            raise
 
     def get_record(self, table_name: str, record_id: str) -> Dict[str, Any]:
         """
-        Get single record from PostgreSQL database.
+        Get single record from PostgreSQL database with read locking.
         
         Parameters
         ----------
@@ -144,17 +287,43 @@ class DatabaseManager:
         -------
         dict
             Record data from PostgreSQL
+            
+        Notes
+        -----
+        - Complexity: O(1) for indexed record retrieval
+        - Thread Safety: Resource locking prevents read-during-write conflicts
+        - Resource Locking: Acquires read lock on table during operation
         """
         self._ensure_postgres_available()
         
-        try:
+        # Acquire read lock for table access
+        resource_id = f"database/table/{table_name}"
+        lock_metadata = {
+            "operation": "get_record",
+            "table_name": table_name,
+            "record_id": record_id,
+            "user_context": "database_manager"
+        }
+        
+        if self.enable_locking and self.lock_manager:
+            try:
+                with self.lock_manager.acquire_lock(resource_id, LockType.READ, 
+                                                  timeout=30, metadata=lock_metadata) as lock:
+                    result = self._get_postgres_record(table_name, record_id)
+                    logger.debug(f"Retrieved record {record_id} from {table_name} (with lock {lock.lock_id})", 
+                               source="database_manager", event_type="get_record")
+                    return result
+                    
+            except ResourceLockConflict as e:
+                logger.warning(f"Resource conflict while reading record from {table_name}: {e.user_message}",
+                             source="database_manager", event_type="get_record_conflict")
+                raise RuntimeError(f"Cannot read record from {table_name}: {e.user_message}")
+        else:
+            # Fallback without locking
             result = self._get_postgres_record(table_name, record_id)
-            logger.debug(f"Retrieved record {record_id} from {table_name}", source="database_manager", event_type="get_record")
+            logger.debug(f"Retrieved record {record_id} from {table_name} (no locking)", 
+                       source="database_manager", event_type="get_record")
             return result
-            
-        except Exception as e:
-            logger.error(f"Failed to get record {record_id} from {table_name}: {e}", source="database_manager", event_type="get_record")
-            raise
 
     def list_records(self, table_name: str, filters: Optional[Dict[str, Any]] = None, limit: Optional[int] = None) -> List[Dict[str, Any]]:
         """
@@ -326,6 +495,92 @@ class DatabaseManager:
             
         except Exception as e:
             logger.error(f"Failed to search records in {table_name}: {e}", source="database_manager", event_type="search_records")
+            raise
+
+    # === Batch Operations ===
+    def bulk_insert(self, table_name: str, records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Insert multiple records efficiently.
+        
+        Parameters
+        ----------
+        table_name : str
+            Table name
+        records : List[Dict[str, Any]]
+            List of records to insert
+            
+        Returns
+        -------
+        List[Dict[str, Any]]
+            List of created records
+        """
+        self._ensure_postgres_available()
+        
+        try:
+            results = self.postgres_client.bulk_insert(table_name, records)
+            logger.info(f"Bulk inserted {len(results)} records into {table_name}", source="database_manager", event_type="bulk_insert")
+            return results
+            
+        except Exception as e:
+            logger.error(f"Failed to bulk insert records into {table_name}: {e}", source="database_manager", event_type="bulk_insert")
+            raise
+
+    def bulk_update(self, table_name: str, updates: List[Dict[str, Any]], id_field: str = "id") -> List[Dict[str, Any]]:
+        """
+        Update multiple records efficiently.
+        
+        Parameters
+        ----------
+        table_name : str
+            Table name
+        updates : List[Dict[str, Any]]
+            List of update dictionaries
+        id_field : str
+            Field name to use as identifier
+            
+        Returns
+        -------
+        List[Dict[str, Any]]
+            List of updated records
+        """
+        self._ensure_postgres_available()
+        
+        try:
+            results = self.postgres_client.bulk_update(table_name, updates, id_field)
+            logger.info(f"Bulk updated {len(results)} records in {table_name}", source="database_manager", event_type="bulk_update")
+            return results
+            
+        except Exception as e:
+            logger.error(f"Failed to bulk update records in {table_name}: {e}", source="database_manager", event_type="bulk_update")
+            raise
+
+    def bulk_delete(self, table_name: str, record_ids: List[Union[str, int]], id_field: str = "id") -> int:
+        """
+        Delete multiple records efficiently.
+        
+        Parameters
+        ----------
+        table_name : str
+            Table name
+        record_ids : List[Union[str, int]]
+            List of record IDs to delete
+        id_field : str
+            Field name to use as identifier
+            
+        Returns
+        -------
+        int
+            Number of records deleted
+        """
+        self._ensure_postgres_available()
+        
+        try:
+            count = self.postgres_client.bulk_delete(table_name, record_ids, id_field)
+            logger.info(f"Bulk deleted {count} records from {table_name}", source="database_manager", event_type="bulk_delete")
+            return count
+            
+        except Exception as e:
+            logger.error(f"Failed to bulk delete records from {table_name}: {e}", source="database_manager", event_type="bulk_delete")
             raise
 
     # === Collection/Table Management ===

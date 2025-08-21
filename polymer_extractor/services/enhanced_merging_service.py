@@ -22,9 +22,12 @@ from dataclasses import asdict
 from difflib import SequenceMatcher
 from lxml import etree
 
-from polymer_extractor.utils.logging import logger
+from polymer_extractor.utils.logging import Logger
 from polymer_extractor.utils.paths import WORKSPACE_DIR
 from polymer_extractor.model_config import ENTITY_SEMANTIC_GROUPS, POST_PROCESSING_CONFIG
+
+# Initialize logger
+logger = Logger()
 
 
 class StrictSentenceProcessor:

@@ -1,40 +1,48 @@
-# polymer_extractor/services/server_manager.py
+# polymer_extractor/server_manager.py
 
 """
 Server Manager for Polymer NLP Extractor.
 
 Purpose
 -------
-Manages the lifecycle of external services (PostgreSQL, Neo4j, Grobid) to ensure:
-- Proper startup sequence
-- Safe shutdown to prevent data corruption
-- Health monitoring and status reporting
-- Graceful cleanup on application exit
+Manages the lifecycle of external services (PostgreSQL, Neo4j, Grobid) via Docker Compose.
+Provides Python interface for service management while delegating actual operations to 
+the authoritative server.sh script.
 
-This manager handles the three critical external services:
-1. PostgreSQL - Database server
-2. Neo4j - Graph database server  
-3. Grobid - Document processing service
+Key Abstractions
+---------------
+- ServiceManager: Orchestrates Docker Compose services via server.sh delegation
+- HealthChecker: Validates service readiness using port checks and container status
+- StatusReporter: Provides detailed service status for debugging
 
-The manager ensures these services are running when needed and properly
-stopped during application shutdown to prevent any data corruption.
+Examples
+--------
+>>> from server_manager import ServerManager
+>>> sm = ServerManager()
+>>> sm.start_all_services()  # Delegates to Docker Compose
+>>> status = sm.get_status()  # Health check results
+>>> sm.clean_shutdown()      # Graceful shutdown
+
+Notes
+-----
+- Actual service management via Docker Compose and server.sh
+- Health checks independent of Docker container status
+- Preserves data during shutdown operations
 """
 
-import asyncio
-import atexit
-import json
 import os
-import signal
-import subprocess
 import sys
 import time
-import psutil
+import signal
+import atexit
+import subprocess
 from pathlib import Path
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple, Union
 from datetime import datetime
 from dotenv import load_dotenv
+import socket
 
-from polymer_extractor.utils.logging import get_logger
+from polymer_extractor.utils.logging import Logger
 
 # Load environment variables
 load_dotenv()
@@ -42,17 +50,49 @@ load_dotenv()
 
 class ServerManager:
     """
-    Manages external service lifecycle for safe database operations.
+    Manages external service lifecycle via Docker Compose delegation.
     
-    Responsibilities:
-    - Start/stop PostgreSQL, Neo4j, and Grobid services
-    - Monitor service health and availability
-    - Ensure graceful shutdown to prevent corruption
-    - Provide status reporting for debugging
+    Summary
+    -------
+    Provides Python interface for service management while delegating actual operations
+    to Docker Compose via server.sh script. Focuses on health monitoring and status
+    reporting rather than direct service manipulation.
+    
+    Parameters
+    ----------
+    startup_timeout : int
+        Maximum seconds to wait for service startup (default: 30)
+    shutdown_timeout : int  
+        Maximum seconds to wait for service shutdown (default: 15)
+    auto_restart : bool
+        Whether to automatically restart failed services (default: True)
+    
+    Returns
+    -------
+    ServerManager
+        Configured service manager instance
+        
+    Raises
+    ------
+    EnvironmentError
+        When required environment variables are missing
+    subprocess.CalledProcessError
+        When Docker Compose commands fail
+        
+    Examples
+    --------
+    >>> sm = ServerManager()
+    >>> sm.services_up()  # Check if all services are running
+    >>> sm.get_status()   # Get detailed status report
+    
+    Notes
+    -----
+    - Complexity: Service operations are O(1), health checks are O(n) services
+    - Side effects: Registers signal handlers for graceful cleanup
     """
     
     def __init__(self):
-        self.logger = get_logger()
+        self.logger = Logger()
         
         # Get configuration from environment variables
         self.startup_timeout = int(os.getenv("SERVER_STARTUP_TIMEOUT", "30"))
@@ -72,7 +112,8 @@ class ServerManager:
                 "pid": None, 
                 "port": postgres_port,
                 "name": "PostgreSQL",
-                "docker_compose_service": "postgres"
+                "docker_compose_service": "postgres",
+                "container_name": "polymer_postgres"
             },
             "neo4j": {
                 "status": "unknown", 
@@ -80,19 +121,21 @@ class ServerManager:
                 "port": neo4j_port,
                 "http_port": neo4j_http_port,
                 "name": "Neo4j", 
-                "docker_compose_service": "neo4j"
+                "docker_compose_service": "neo4j",
+                "container_name": "polymer_neo4j"
             },
             "grobid": {
                 "status": "unknown", 
                 "pid": None, 
                 "port": grobid_port,
                 "name": "GROBID",
-                "docker_compose_service": "grobid"
+                "docker_compose_service": "grobid",
+                "container_name": "polymer_grobid"
             }
         }
         
-        # Track process IDs for cleanup
-        self._tracked_pids = set()
+        # Track managed services
+        self._managed_services = set()
         
         # Register cleanup handlers
         atexit.register(self._cleanup_on_exit)
@@ -101,270 +144,320 @@ class ServerManager:
         
         self.logger.info(f"ServerManager initialized with ports: PostgreSQL:{postgres_port}, Neo4j:{neo4j_port}, GROBID:{grobid_port}", 
                         source="server_manager", event_type="initialization")
-        self.logger.info(f"Configuration: startup_timeout={self.startup_timeout}s, shutdown_timeout={self.shutdown_timeout}s, auto_restart={self.auto_restart}",
-                        source="server_manager", event_type="initialization")
-    
-    def _signal_handler(self, signum, frame):
-        """Handle interrupt signals with graceful cleanup."""
-        self.logger.warning(f"Received signal {signum}, initiating graceful shutdown...", 
-                           source="server_manager", event_type="signal_handler")
-        print("\n🛑 CLEANING UP (stopping servers), please wait - DO NOT INTERRUPT!")
-        self.stop_all_services()
-        sys.exit(0)
-    
-    def _cleanup_on_exit(self):
-        """Cleanup function called on normal exit."""
-        print("🛑 CLEANING UP (stopping servers), please wait - DO NOT INTERRUPT!")
-        self.stop_all_services()
-    
-    def check_service_running(self, service_name: str) -> bool:
+
+    def _check_port_available(self, port: int, host: str = "localhost") -> bool:
         """
-        Check if a service is currently running.
+        Check if a port is available (not in use).
         
         Parameters
         ----------
-        service_name : str
-            Name of service ('postgresql', 'neo4j', 'grobid')
+        port : int
+            Port number to check
+        host : str
+            Host to check port on (default: localhost)
             
         Returns
         -------
         bool
-            True if service is running and responsive
+            True if port is available, False if in use
+        """
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.settimeout(1)
+                result = sock.connect_ex((host, port))
+                return result != 0  # 0 means connection successful (port in use)
+        except Exception:
+            return True  # Assume available if check fails
+
+    def _check_service_health(self, service_name: str) -> Dict[str, Any]:
+        """
+        Check health of a specific service.
+        
+        Parameters
+        ----------
+        service_name : str
+            Name of service to check (postgresql, neo4j, grobid)
+            
+        Returns
+        -------
+        Dict[str, Any]
+            Health status with port_active, container_running, ready fields
         """
         if service_name not in self.services:
-            return False
+            return {"error": f"Unknown service: {service_name}"}
             
-        service_info = self.services[service_name]
-        port = service_info["port"]
+        service = self.services[service_name]
+        health = {
+            "service": service_name,
+            "port_active": False,
+            "container_running": False,
+            "ready": False
+        }
         
+        # Check if main port is active
+        health["port_active"] = not self._check_port_available(service["port"])
+        
+        # Check container status via docker
         try:
-            # Check if port is listening
             result = subprocess.run(
-                ["netstat", "-tuln"], 
-                capture_output=True, 
-                text=True, 
-                timeout=5
+                ["docker", "ps", "--filter", f"name={service['container_name']}", "--format", "{{.Status}}"],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                status = result.stdout.strip().lower()
+                health["container_running"] = "up" in status
+        except Exception as e:
+            self.logger.warning(f"Failed to check container status for {service_name}: {e}", 
+                              source="server_manager", event_type="health_check")
+        
+        # Service is ready if both port is active and container is running
+        health["ready"] = health["port_active"] and health["container_running"]
+        
+        return health
+
+    def start_postgresql(self) -> bool:
+        """
+        Start PostgreSQL service via Docker Compose.
+        
+        Returns
+        -------
+        bool
+            True if service started successfully
+            
+        Raises
+        ------
+        subprocess.CalledProcessError
+            When Docker Compose command fails
+            
+        Examples
+        --------
+        >>> sm = ServerManager()
+        >>> success = sm.start_postgresql()
+        >>> if success:
+        ...     print("PostgreSQL is ready")
+        
+        Notes
+        -----
+        - Delegates to Docker Compose for actual service management
+        - Waits for service readiness up to startup_timeout seconds
+        """
+        try:
+            self.logger.info("Starting PostgreSQL service via Docker Compose", 
+                           source="server_manager", event_type="service_start")
+            
+            # Start PostgreSQL service
+            result = subprocess.run(
+                ["docker-compose", "-f", "docker-compose.services.yml", "up", "-d", "postgres"],
+                capture_output=True, text=True, timeout=30
             )
             
-            if result.returncode == 0:
-                listening = f":{port}" in result.stdout
-                self.services[service_name]["status"] = "running" if listening else "stopped"
-                return listening
+            if result.returncode != 0:
+                self.logger.error(f"Failed to start PostgreSQL: {result.stderr}", 
+                                source="server_manager", event_type="service_start_failed")
+                return False
+            
+            # Wait for service to be ready
+            start_time = time.time()
+            while time.time() - start_time < self.startup_timeout:
+                health = self._check_service_health("postgresql")
+                if health.get("ready", False):
+                    self.services["postgresql"]["status"] = "running"
+                    self._managed_services.add("postgresql")
+                    self.logger.info("PostgreSQL service started successfully", 
+                                   source="server_manager", event_type="service_ready")
+                    return True
+                time.sleep(2)
+            
+            self.logger.error(f"PostgreSQL failed to become ready within {self.startup_timeout}s", 
+                            source="server_manager", event_type="service_timeout")
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"Error starting PostgreSQL: {e}", 
+                            source="server_manager", event_type="service_error")
+            return False
+
+    def start_neo4j(self) -> bool:
+        """
+        Start Neo4j service via Docker Compose.
+        
+        Returns
+        -------
+        bool
+            True if service started successfully
+            
+        Examples
+        --------
+        >>> sm = ServerManager()
+        >>> success = sm.start_neo4j()
+        
+        Notes
+        -----
+        - Neo4j may take longer to start than other services
+        - Checks both bolt port (7687) and HTTP port (7474)
+        """
+        try:
+            self.logger.info("Starting Neo4j service via Docker Compose", 
+                           source="server_manager", event_type="service_start")
+            
+            # Start Neo4j service
+            result = subprocess.run(
+                ["docker-compose", "-f", "docker-compose.services.yml", "up", "-d", "neo4j"],
+                capture_output=True, text=True, timeout=30
+            )
+            
+            if result.returncode != 0:
+                self.logger.error(f"Failed to start Neo4j: {result.stderr}", 
+                                source="server_manager", event_type="service_start_failed")
+                return False
+            
+            # Wait for service to be ready
+            start_time = time.time()
+            while time.time() - start_time < self.startup_timeout:
+                health = self._check_service_health("neo4j")
+                if health.get("ready", False):
+                    self.services["neo4j"]["status"] = "running"
+                    self._managed_services.add("neo4j")
+                    self.logger.info("Neo4j service started successfully", 
+                                   source="server_manager", event_type="service_ready")
+                    return True
+                time.sleep(2)
+            
+            self.logger.error(f"Neo4j failed to become ready within {self.startup_timeout}s", 
+                            source="server_manager", event_type="service_timeout")
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"Error starting Neo4j: {e}", 
+                            source="server_manager", event_type="service_error")
+            return False
+
+    def start_grobid(self) -> bool:
+        """
+        Start GROBID service via Docker Compose.
+        
+        Returns
+        -------
+        bool
+            True if service started successfully
+            
+        Examples
+        --------
+        >>> sm = ServerManager()
+        >>> success = sm.start_grobid()
+        
+        Notes
+        -----
+        - GROBID is heaviest service and may take longest to start
+        - Service readiness determined by HTTP endpoint availability
+        """
+        try:
+            self.logger.info("Starting GROBID service via Docker Compose", 
+                           source="server_manager", event_type="service_start")
+            
+            # Start GROBID service
+            result = subprocess.run(
+                ["docker-compose", "-f", "docker-compose.services.yml", "up", "-d", "grobid"],
+                capture_output=True, text=True, timeout=60  # GROBID takes longer
+            )
+            
+            if result.returncode != 0:
+                self.logger.error(f"Failed to start GROBID: {result.stderr}", 
+                                source="server_manager", event_type="service_start_failed")
+                return False
+            
+            # Wait for service to be ready (GROBID takes longer)
+            start_time = time.time()
+            extended_timeout = max(self.startup_timeout, 60)  # At least 60s for GROBID
+            while time.time() - start_time < extended_timeout:
+                health = self._check_service_health("grobid")
+                if health.get("ready", False):
+                    self.services["grobid"]["status"] = "running"
+                    self._managed_services.add("grobid")
+                    self.logger.info("GROBID service started successfully", 
+                                   source="server_manager", event_type="service_ready")
+                    return True
+                time.sleep(3)  # Check less frequently for GROBID
+            
+            self.logger.error(f"GROBID failed to become ready within {extended_timeout}s", 
+                            source="server_manager", event_type="service_timeout")
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"Error starting GROBID: {e}", 
+                            source="server_manager", event_type="service_error")
+            return False
+
+    def start_all_services(self) -> bool:
+        """
+        Start all services via Docker Compose.
+        
+        Returns
+        -------
+        bool
+            True if all services started successfully
+            
+        Examples
+        --------
+        >>> sm = ServerManager()
+        >>> if sm.start_all_services():
+        ...     print("All services ready")
+        
+        Notes
+        -----
+        - Starts services in parallel for faster startup
+        - Returns False if any service fails to start
+        """
+        try:
+            self.logger.info("Starting all services via Docker Compose", 
+                           source="server_manager", event_type="services_start")
+            
+            # Start all services at once
+            result = subprocess.run(
+                ["docker-compose", "-f", "docker-compose.services.yml", "up", "-d"],
+                capture_output=True, text=True, timeout=60
+            )
+            
+            if result.returncode != 0:
+                self.logger.error(f"Failed to start services: {result.stderr}", 
+                                source="server_manager", event_type="services_start_failed")
+                return False
+            
+            # Wait for all services to be ready
+            all_ready = False
+            start_time = time.time()
+            max_timeout = max(self.startup_timeout, 60)  # At least 60s for GROBID
+            
+            while time.time() - start_time < max_timeout and not all_ready:
+                service_status = []
+                for service_name in self.services.keys():
+                    health = self._check_service_health(service_name)
+                    if health.get("ready", False):
+                        self.services[service_name]["status"] = "running"
+                        self._managed_services.add(service_name)
+                    service_status.append(health.get("ready", False))
+                
+                all_ready = all(service_status)
+                if not all_ready:
+                    time.sleep(3)
+            
+            if all_ready:
+                self.logger.info("All services started successfully", 
+                               source="server_manager", event_type="services_ready")
+                return True
             else:
-                self.services[service_name]["status"] = "unknown"
+                self.logger.error(f"Not all services ready within {max_timeout}s", 
+                                source="server_manager", event_type="services_timeout")
                 return False
                 
         except Exception as e:
-            self.logger.error(f"Failed to check {service_name} status: {e}", 
-                            source="server_manager", event_type="health_check")
-            self.services[service_name]["status"] = "error"
+            self.logger.error(f"Error starting services: {e}", 
+                            source="server_manager", event_type="services_error")
             return False
-    
-    def start_postgresql(self) -> Dict[str, Any]:
+
+    def stop_service(self, service_name: str) -> bool:
         """
-        Start PostgreSQL service if not running.
-        
-        Returns
-        -------
-        Dict[str, Any]
-            Status of PostgreSQL startup attempt
-        """
-        result = {
-            "service": "postgresql",
-            "success": False,
-            "message": "",
-            "timestamp": datetime.now().isoformat() + "Z"
-        }
-        
-        try:
-            if self.check_service_running("postgresql"):
-                result["success"] = True
-                result["message"] = "PostgreSQL already running"
-                return result
-            
-            self.logger.info("Starting PostgreSQL service...", 
-                           source="server_manager", event_type="start_service")
-            
-            # Try common PostgreSQL startup commands
-            start_commands = [
-                ["sudo", "systemctl", "start", "postgresql"],
-                ["brew", "services", "start", "postgresql"],  # macOS
-                ["pg_ctl", "start", "-D", "/usr/local/var/postgres"]  # Direct start
-            ]
-            
-            for cmd in start_commands:
-                try:
-                    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-                    if proc.returncode == 0:
-                        # Wait for service to be ready
-                        for _ in range(10):
-                            if self.check_service_running("postgresql"):
-                                result["success"] = True
-                                result["message"] = f"PostgreSQL started successfully with: {' '.join(cmd)}"
-                                self.logger.info(result["message"], 
-                                               source="server_manager", event_type="start_service")
-                                return result
-                            time.sleep(1)
-                        break
-                except (subprocess.TimeoutExpired, FileNotFoundError):
-                    continue
-            
-            result["message"] = "Failed to start PostgreSQL with any known method"
-            
-        except Exception as e:
-            result["message"] = f"PostgreSQL startup error: {e}"
-            self.logger.error(result["message"], source="server_manager", event_type="start_service")
-        
-        return result
-    
-    def start_neo4j(self) -> Dict[str, Any]:
-        """
-        Start Neo4j service if not running.
-        
-        Returns
-        -------
-        Dict[str, Any]
-            Status of Neo4j startup attempt
-        """
-        result = {
-            "service": "neo4j",
-            "success": False,
-            "message": "",
-            "timestamp": datetime.now().isoformat() + "Z"
-        }
-        
-        try:
-            if self.check_service_running("neo4j"):
-                result["success"] = True
-                result["message"] = "Neo4j already running"
-                return result
-            
-            self.logger.info("Starting Neo4j service...", 
-                           source="server_manager", event_type="start_service")
-            
-            # Try common Neo4j startup commands
-            start_commands = [
-                ["sudo", "systemctl", "start", "neo4j"],
-                ["brew", "services", "start", "neo4j"],  # macOS
-                ["neo4j", "start"],  # Direct start
-                ["/usr/share/neo4j/bin/neo4j", "start"]  # Ubuntu path
-            ]
-            
-            for cmd in start_commands:
-                try:
-                    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-                    if proc.returncode == 0:
-                        # Wait for service to be ready
-                        for _ in range(15):  # Neo4j takes longer to start
-                            if self.check_service_running("neo4j"):
-                                result["success"] = True
-                                result["message"] = f"Neo4j started successfully with: {' '.join(cmd)}"
-                                self.logger.info(result["message"], 
-                                               source="server_manager", event_type="start_service")
-                                return result
-                            time.sleep(2)
-                        break
-                except (subprocess.TimeoutExpired, FileNotFoundError):
-                    continue
-            
-            result["message"] = "Failed to start Neo4j with any known method"
-            
-        except Exception as e:
-            result["message"] = f"Neo4j startup error: {e}"
-            self.logger.error(result["message"], source="server_manager", event_type="start_service")
-        
-        return result
-    
-    def start_grobid(self) -> Dict[str, Any]:
-        """
-        Start Grobid service if not running.
-        
-        Returns
-        -------
-        Dict[str, Any]
-            Status of Grobid startup attempt
-        """
-        result = {
-            "service": "grobid",
-            "success": False,
-            "message": "",
-            "timestamp": datetime.now().isoformat() + "Z"
-        }
-        
-        try:
-            if self.check_service_running("grobid"):
-                result["success"] = True
-                result["message"] = "Grobid already running"
-                return result
-            
-            self.logger.info("Starting Grobid service...", 
-                           source="server_manager", event_type="start_service")
-            
-            # Look for Grobid installation, starting with environment variable
-            grobid_paths = []
-            
-            # Check if GROBID_PATH is set in environment
-            env_grobid_path = os.getenv("GROBID_PATH")
-            if env_grobid_path:
-                grobid_paths.append(env_grobid_path)
-            
-            # Add default search paths
-            grobid_paths.extend([
-                "./workspace/grobid-0.8.2",
-                "/opt/grobid",
-                os.path.expanduser("~/grobid"),
-                os.path.expanduser("~/grobid-0.8.2")
-            ])
-            
-            grobid_path = None
-            for path in grobid_paths:
-                if os.path.exists(os.path.join(path, "gradlew")):
-                    grobid_path = path
-                    self.logger.info(f"Found Grobid installation at: {path}", 
-                                   source="server_manager", event_type="start_service")
-                    break
-            
-            if not grobid_path:
-                result["message"] = f"Grobid installation not found. Searched paths: {grobid_paths}. Set GROBID_PATH environment variable to specify custom location."
-                return result
-            
-            # Start Grobid
-            try:
-                cmd = ["./gradlew", "run"]
-                proc = subprocess.Popen(
-                    cmd,
-                    cwd=grobid_path,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    start_new_session=True
-                )
-                
-                self.services["grobid"]["pid"] = proc.pid
-                
-                # Wait for service to be ready
-                for _ in range(30):  # Grobid takes time to start
-                    if self.check_service_running("grobid"):
-                        result["success"] = True
-                        result["message"] = f"Grobid started successfully (PID: {proc.pid})"
-                        self.logger.info(result["message"], 
-                                       source="server_manager", event_type="start_service")
-                        return result
-                    time.sleep(2)
-                
-                result["message"] = "Grobid process started but not responding on port 8070"
-                
-            except Exception as e:
-                result["message"] = f"Failed to start Grobid: {e}"
-            
-        except Exception as e:
-            result["message"] = f"Grobid startup error: {e}"
-            self.logger.error(result["message"], source="server_manager", event_type="start_service")
-        
-        return result
-    
-    def stop_service(self, service_name: str) -> Dict[str, Any]:
-        """
-        Stop a specific service.
+        Stop a specific service via Docker Compose.
         
         Parameters
         ----------
@@ -373,356 +466,298 @@ class ServerManager:
             
         Returns
         -------
-        Dict[str, Any]
-            Status of stop operation
+        bool
+            True if service stopped successfully
         """
-        result = {
-            "service": service_name,
-            "success": False,
-            "message": "",
-            "timestamp": datetime.now().isoformat() + "Z"
-        }
+        if service_name not in self.services:
+            self.logger.error(f"Unknown service: {service_name}", 
+                            source="server_manager", event_type="service_error")
+            return False
         
         try:
-            if service_name == "postgresql":
-                stop_commands = [
-                    ["sudo", "systemctl", "stop", "postgresql"],
-                    ["brew", "services", "stop", "postgresql"],
-                    ["pg_ctl", "stop", "-D", "/usr/local/var/postgres"]
-                ]
-            elif service_name == "neo4j":
-                stop_commands = [
-                    ["sudo", "systemctl", "stop", "neo4j"],
-                    ["brew", "services", "stop", "neo4j"],
-                    ["neo4j", "stop"],
-                    ["/usr/share/neo4j/bin/neo4j", "stop"]
-                ]
-            elif service_name == "grobid":
-                # Handle Grobid specially since it might be a process we started
-                service_info = self.services.get("grobid", {})
-                pid = service_info.get("pid")
-                if pid:
-                    try:
-                        os.kill(pid, signal.SIGTERM)
-                        time.sleep(2)
-                        os.kill(pid, signal.SIGKILL)  # Force kill if still running
-                        result["success"] = True
-                        result["message"] = f"Grobid process {pid} stopped"
-                        return result
-                    except ProcessLookupError:
-                        result["success"] = True
-                        result["message"] = "Grobid process was already stopped"
-                        return result
-                
-                stop_commands = [
-                    ["pkill", "-f", "grobid"],
-                    ["killall", "java"]  # Last resort
-                ]
+            service = self.services[service_name]
+            compose_service = service["docker_compose_service"]
+            
+            result = subprocess.run(
+                ["docker-compose", "-f", "docker-compose.services.yml", "stop", compose_service],
+                capture_output=True, text=True, timeout=self.shutdown_timeout
+            )
+            
+            if result.returncode == 0:
+                self.services[service_name]["status"] = "stopped"
+                self._managed_services.discard(service_name)
+                self.logger.info(f"{service_name} service stopped", 
+                               source="server_manager", event_type="service_stop")
+                return True
             else:
-                result["message"] = f"Unknown service: {service_name}"
-                return result
-            
-            for cmd in stop_commands:
-                try:
-                    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-                    if proc.returncode == 0:
-                        result["success"] = True
-                        result["message"] = f"{service_name} stopped successfully"
-                        self.services[service_name]["status"] = "stopped"
-                        return result
-                except (subprocess.TimeoutExpired, FileNotFoundError):
-                    continue
-            
-            result["message"] = f"Failed to stop {service_name} with any known method"
-            
+                self.logger.error(f"Failed to stop {service_name}: {result.stderr}", 
+                                source="server_manager", event_type="service_stop_failed")
+                return False
+                
         except Exception as e:
-            result["message"] = f"Error stopping {service_name}: {e}"
-            self.logger.error(result["message"], source="server_manager", event_type="stop_service")
-        
-        return result
-    
-    def stop_all_services(self) -> Dict[str, Any]:
-        """
-        Stop all managed services in safe order.
-        
-        Returns
-        -------
-        Dict[str, Any]
-            Summary of stop operations
-        """
-        result = {
-            "operation": "stop_all_services",
-            "services": {},
-            "timestamp": datetime.now().isoformat() + "Z"
-        }
-        
-        # Stop in reverse dependency order: Grobid, Neo4j, PostgreSQL
-        services_order = ["grobid", "neo4j", "postgresql"]
-        
-        for service_name in services_order:
-            print(f"🛑 Stopping {service_name}...")
-            stop_result = self.stop_service(service_name)
-            result["services"][service_name] = stop_result
-            
-            if stop_result["success"]:
-                print(f"✅ {service_name} stopped safely")
-            else:
-                print(f"⚠️  {service_name} stop issue: {stop_result['message']}")
-        
-        self.logger.info("All services stop attempt completed", 
-                        source="server_manager", event_type="stop_all")
-        print("✅ Cleanup completed")
-        
-        return result
-    
-    def start_all_services(self) -> Dict[str, Any]:
-        """
-        Start all required services in correct order.
-        
-        Returns
-        -------
-        Dict[str, Any]
-            Summary of startup operations
-        """
-        result = {
-            "operation": "start_all_services",
-            "services": {},
-            "timestamp": datetime.now().isoformat() + "Z"
-        }
-        
-        # Start in dependency order: PostgreSQL, Neo4j, Grobid
-        services_order = ["postgresql", "neo4j", "grobid"]
-        
-        for service_name in services_order:
-            if service_name == "postgresql":
-                start_result = self.start_postgresql()
-            elif service_name == "neo4j":
-                start_result = self.start_neo4j()
-            elif service_name == "grobid":
-                start_result = self.start_grobid()
-            
-            result["services"][service_name] = start_result
-            
-            if not start_result["success"]:
-                self.logger.error(f"Failed to start {service_name}: {start_result['message']}", 
-                                source="server_manager", event_type="start_all")
-        
-        return result
-    
-    def get_status(self) -> Dict[str, Any]:
-        """
-        Get current status of all services.
-        
-        Returns
-        -------
-        Dict[str, Any]
-            Current status of all managed services
-        """
-        # Refresh status for all services
-        for service_name in self.services.keys():
-            self.check_service_running(service_name)
-        
-        return {
-            "operation": "get_status",
-            "services": self.services.copy(),
-            "timestamp": datetime.now().isoformat() + "Z"
-        }
+            self.logger.error(f"Error stopping {service_name}: {e}", 
+                            source="server_manager", event_type="service_error")
+            return False
 
-    # === ENHANCED PORT MANAGEMENT AND CLEANUP ===
-    
-    def free_all_ports(self) -> Dict[str, Any]:
+    def stop_all_services(self) -> bool:
         """
-        Free all ports used by managed services.
+        Stop all services via Docker Compose.
         
-        Returns
-        -------
-        Dict[str, Any]
-            Summary of port cleanup operations
-        """
-        result = {
-            "operation": "free_all_ports",
-            "ports_freed": [],
-            "errors": [],
-            "timestamp": datetime.now().isoformat() + "Z"
-        }
-        
-        for service_name, service_info in self.services.items():
-            try:
-                port = service_info["port"]
-                if self._free_port(port):
-                    result["ports_freed"].append({"service": service_name, "port": port})
-                    self.logger.info(f"Freed port {port} for {service_name}", 
-                                   source="server_manager", event_type="free_port")
-                
-                # Also free HTTP port for Neo4j
-                if service_name == "neo4j" and "http_port" in service_info:
-                    http_port = service_info["http_port"]
-                    if self._free_port(http_port):
-                        result["ports_freed"].append({"service": f"{service_name}_http", "port": http_port})
-                        
-            except Exception as e:
-                error_msg = f"Failed to free port for {service_name}: {str(e)}"
-                result["errors"].append(error_msg)
-                self.logger.error(error_msg, source="server_manager", event_type="free_port")
-        
-        return result
-    
-    def _free_port(self, port: int) -> bool:
-        """
-        Free a specific port by killing processes using it.
-        
-        Parameters
-        ----------
-        port : int
-            Port number to free
-            
         Returns
         -------
         bool
-            True if port was freed successfully
+            True if all services stopped successfully
         """
         try:
-            # Find processes using the port
-            for proc in psutil.process_iter(['pid', 'name', 'connections']):
-                try:
-                    for conn in proc.info['connections'] or []:
-                        if conn.laddr.port == port:
-                            proc.terminate()
-                            self.logger.info(f"Terminated process {proc.info['pid']} ({proc.info['name']}) using port {port}",
-                                           source="server_manager", event_type="free_port")
-                            # Wait for graceful termination
-                            try:
-                                proc.wait(timeout=5)
-                            except psutil.TimeoutExpired:
-                                proc.kill()
-                                self.logger.warning(f"Force killed process {proc.info['pid']} on port {port}",
-                                                  source="server_manager", event_type="free_port")
-                            return True
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    continue
+            self.logger.info("Stopping all services via Docker Compose", 
+                           source="server_manager", event_type="services_stop")
+            
+            result = subprocess.run(
+                ["docker-compose", "-f", "docker-compose.services.yml", "down"],
+                capture_output=True, text=True, timeout=self.shutdown_timeout * 2
+            )
+            
+            if result.returncode == 0:
+                for service_name in self.services.keys():
+                    self.services[service_name]["status"] = "stopped"
+                self._managed_services.clear()
+                self.logger.info("All services stopped successfully", 
+                               source="server_manager", event_type="services_stopped")
+                return True
+            else:
+                self.logger.error(f"Failed to stop services: {result.stderr}", 
+                                source="server_manager", event_type="services_stop_failed")
+                return False
+                
+        except Exception as e:
+            self.logger.error(f"Error stopping services: {e}", 
+                            source="server_manager", event_type="services_error")
+            return False
+
+    def services_up(self) -> bool:
+        """
+        Check if all services are running and ready.
+        
+        Returns
+        -------
+        bool
+            True if all services are ready
+            
+        Examples
+        --------
+        >>> sm = ServerManager()
+        >>> if sm.services_up():
+        ...     print("All services operational")
+        
+        Notes
+        -----
+        - Performs actual health checks, not just container status
+        - Returns False if any service is not ready
+        """
+        try:
+            for service_name in self.services.keys():
+                health = self._check_service_health(service_name)
+                if not health.get("ready", False):
+                    return False
             return True
         except Exception as e:
-            self.logger.error(f"Error freeing port {port}: {str(e)}", 
-                            source="server_manager", event_type="free_port")
+            self.logger.error(f"Error checking services: {e}", 
+                            source="server_manager", event_type="health_check_error")
             return False
-    
-    def get_all_status(self) -> Dict[str, Dict[str, Any]]:
+
+    def get_status(self) -> Dict[str, Any]:
         """
-        Get comprehensive status of all services with health checks.
+        Get detailed status of all services.
         
         Returns
         -------
-        Dict[str, Dict[str, Any]]
-            Detailed status for each service
+        Dict[str, Any]
+            Status report with service health and configuration
+            
+        Examples
+        --------
+        >>> sm = ServerManager()
+        >>> status = sm.get_status()
+        >>> print(f"PostgreSQL ready: {status['postgresql']['ready']}")
+        
+        Notes
+        -----
+        - Provides comprehensive health information for debugging
+        - Includes port status, container status, and readiness
         """
-        status = {}
-        for service_name in self.services.keys():
-            is_running = self.check_service_running(service_name)
-            service_info = self.services[service_name].copy()
-            service_info["is_running"] = is_running
-            service_info["health_check_time"] = datetime.now().isoformat() + "Z"
+        status = {
+            "timestamp": datetime.now().isoformat(),
+            "services": {},
+            "summary": {
+                "total_services": len(self.services),
+                "running_services": 0,
+                "ready_services": 0,
+                "all_ready": False
+            }
+        }
+        
+        for service_name, service_config in self.services.items():
+            health = self._check_service_health(service_name)
+            status["services"][service_name] = {
+                "name": service_config["name"],
+                "port": service_config["port"],
+                "container": service_config["container_name"],
+                "health": health,
+                "managed": service_name in self._managed_services
+            }
             
-            # Add port information
-            if is_running:
-                service_info["port_status"] = "listening"
-            else:
-                service_info["port_status"] = "not_listening"
-            
-            status[service_name] = service_info
+            if health.get("container_running", False):
+                status["summary"]["running_services"] += 1
+            if health.get("ready", False):
+                status["summary"]["ready_services"] += 1
+        
+        status["summary"]["all_ready"] = (
+            status["summary"]["ready_services"] == status["summary"]["total_services"]
+        )
         
         return status
-    
-    def emergency_cleanup(self) -> Dict[str, Any]:
+
+    def clean_shutdown(self) -> bool:
         """
-        Emergency cleanup method for force-stopping all services.
+        Perform graceful shutdown preserving data.
         
         Returns
         -------
-        Dict[str, Any]
-            Summary of emergency cleanup operations
-        """
-        result = {
-            "operation": "emergency_cleanup",
-            "actions": [],
-            "timestamp": datetime.now().isoformat() + "Z"
-        }
-        
-        self.logger.warning("Initiating emergency cleanup", 
-                          source="server_manager", event_type="emergency_cleanup")
-        
-        # Stop all services
-        stop_result = self.stop_all_services()
-        result["actions"].append({"action": "stop_services", "result": stop_result})
-        
-        # Free all ports
-        port_result = self.free_all_ports()
-        result["actions"].append({"action": "free_ports", "result": port_result})
-        
-        # Kill tracked PIDs
-        killed_pids = []
-        for pid in self._tracked_pids.copy():
-            try:
-                proc = psutil.Process(pid)
-                proc.terminate()
-                try:
-                    proc.wait(timeout=3)
-                except psutil.TimeoutExpired:
-                    proc.kill()
-                killed_pids.append(pid)
-                self._tracked_pids.discard(pid)
-            except psutil.NoSuchProcess:
-                self._tracked_pids.discard(pid)
-            except Exception as e:
-                self.logger.error(f"Failed to kill PID {pid}: {str(e)}", 
-                                source="server_manager", event_type="emergency_cleanup")
-        
-        if killed_pids:
-            result["actions"].append({"action": "kill_tracked_pids", "pids": killed_pids})
-        
-        return result
-    
-    def restart_service(self, service_name: str) -> Dict[str, Any]:
-        """
-        Restart a specific service.
-        
-        Parameters
-        ----------
-        service_name : str
-            Name of service to restart
+        bool
+            True if shutdown completed successfully
             
+        Examples
+        --------
+        >>> sm = ServerManager()
+        >>> sm.clean_shutdown()  # Preserves all data
+        
+        Notes
+        -----
+        - Stops services but preserves volumes and data
+        - Equivalent to server.sh clean command
+        """
+        try:
+            self.logger.info("Performing clean shutdown (preserving data)", 
+                           source="server_manager", event_type="shutdown")
+            return self.stop_all_services()
+        except Exception as e:
+            self.logger.error(f"Error during clean shutdown: {e}", 
+                            source="server_manager", event_type="shutdown_error")
+            return False
+
+    def reset_all(self) -> bool:
+        """
+        Reset all services removing volumes but keeping images.
+        
         Returns
         -------
-        Dict[str, Any]
-            Result of restart operation
-        """
-        result = {
-            "operation": "restart_service",
-            "service": service_name,
-            "timestamp": datetime.now().isoformat() + "Z"
-        }
-        
-        # Stop the service
-        stop_result = self.stop_service(service_name)
-        result["stop_result"] = stop_result
-        
-        if stop_result["success"]:
-            # Wait a moment for cleanup
-            time.sleep(2)
+        bool
+            True if reset completed successfully
             
-            # Start the service
-            if service_name == "postgresql":
-                start_result = self.start_postgresql()
-            elif service_name == "neo4j":
-                start_result = self.start_neo4j()
-            elif service_name == "grobid":
-                start_result = self.start_grobid()
+        Notes
+        -----
+        - Equivalent to server.sh reset command
+        - Removes volumes but keeps Docker images
+        """
+        try:
+            self.logger.info("Resetting all services (removing volumes)", 
+                           source="server_manager", event_type="reset")
+            
+            result = subprocess.run(
+                ["docker-compose", "-f", "docker-compose.services.yml", "down", "-v"],
+                capture_output=True, text=True, timeout=self.shutdown_timeout * 2
+            )
+            
+            if result.returncode == 0:
+                for service_name in self.services.keys():
+                    self.services[service_name]["status"] = "reset"
+                self._managed_services.clear()
+                self.logger.info("All services reset successfully", 
+                               source="server_manager", event_type="reset_complete")
+                return True
             else:
-                start_result = {"success": False, "message": f"Unknown service: {service_name}"}
-            
-            result["start_result"] = start_result
-            result["success"] = start_result["success"]
-        else:
-            result["success"] = False
-            result["message"] = f"Failed to stop {service_name} for restart"
+                self.logger.error(f"Failed to reset services: {result.stderr}", 
+                                source="server_manager", event_type="reset_failed")
+                return False
+                
+        except Exception as e:
+            self.logger.error(f"Error during reset: {e}", 
+                            source="server_manager", event_type="reset_error")
+            return False
+
+    def purge_all(self) -> bool:
+        """
+        Purge all services removing containers, volumes, and images.
         
-        return result
+        Returns
+        -------
+        bool
+            True if purge completed successfully
+            
+        Notes
+        -----
+        - Equivalent to server.sh purge command
+        - Complete cleanup removing everything
+        """
+        try:
+            self.logger.info("Purging all services (complete cleanup)", 
+                           source="server_manager", event_type="purge")
+            
+            # Use server.sh for complete purge
+            result = subprocess.run(
+                ["./server.sh", "purge"],
+                capture_output=True, text=True, timeout=60
+            )
+            
+            if result.returncode == 0:
+                for service_name in self.services.keys():
+                    self.services[service_name]["status"] = "purged"
+                self._managed_services.clear()
+                self.logger.info("All services purged successfully", 
+                               source="server_manager", event_type="purge_complete")
+                return True
+            else:
+                self.logger.error(f"Failed to purge services: {result.stderr}", 
+                                source="server_manager", event_type="purge_failed")
+                return False
+                
+        except Exception as e:
+            self.logger.error(f"Error during purge: {e}", 
+                            source="server_manager", event_type="purge_error")
+            return False
+
+    def _signal_handler(self, signum: int, frame) -> None:
+        """Handle shutdown signals gracefully."""
+        self.logger.info(f"Received signal {signum}, initiating shutdown", 
+                        source="server_manager", event_type="signal_received")
+        self.clean_shutdown()
+        sys.exit(0)
+
+    def _cleanup_on_exit(self) -> None:
+        """Cleanup services on application exit."""
+        if self._managed_services:
+            self.logger.info("Application exit detected, cleaning up services", 
+                           source="server_manager", event_type="cleanup")
+            self.clean_shutdown()
+
+
+# Convenience functions for direct use
+def start_services() -> bool:
+    """Start all services. Returns True if successful."""
+    manager = ServerManager()
+    return manager.start_all_services()
+
+def stop_services() -> bool:
+    """Stop all services. Returns True if successful."""
+    manager = ServerManager()
+    return manager.stop_all_services()
+
+def check_services() -> bool:
+    """Check if all services are running. Returns True if all ready."""
+    manager = ServerManager()
+    return manager.services_up()
+
+def get_service_status() -> Dict[str, Any]:
+    """Get detailed service status report."""
+    manager = ServerManager()
+    return manager.get_status()

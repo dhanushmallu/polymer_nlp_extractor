@@ -1,57 +1,79 @@
 # polymer_extractor/storage/neo4j_client.py
 
 """
-Neo4j Client for Polymer NLP Extractor.
+polymer_extractor/storage/neo4j_client.py
+
+Enterprise-grade Neo4j client for graph database operations in Polymer NLP Extractor.
 
 Purpose
 -------
-A single, reliable entry point for connecting to and querying Neo4j with:
-- Managed driver lifecycle
-- Safe, parameterized Cypher execution
-- Health checks and structured diagnostics
-- Transaction context manager (read/write)
-- Minimal retry logic for transient routing/connection errors
-- Convenience helpers for common tasks (constraints, upsert)
+Provides robust, production-ready interface for Neo4j graph database operations with:
+- Managed driver lifecycle with connection pooling and health monitoring
+- Safe, parameterized Cypher execution with retry logic for transient failures
+- Comprehensive health checks and structured diagnostics
+- Transaction context managers for atomic read/write operations
+- Schema management helpers (constraints, indexes) for graph optimization
+- Convenience upsert operations for common graph patterns
 
-Design Principles
+Key Abstractions
+----------------
+- Neo4jClient: Core driver wrapper with connection management and diagnostics
+- Transaction context: Automatic commit/rollback for atomic operations
+- Health monitoring: Real-time database status and connectivity validation
+- Schema operations: Constraint and index management for graph integrity
+- Retry mechanisms: Automatic handling of transient connection failures
+
+Design Invariants
 -----------------
-1) Environment-first configuration (dotenv) with clear validation.
-2) Small, explicit API surface that services and KG modules can depend on.
-3) No schema assumptions — works with raw Cypher (ready for KG repository/pipeline).
-4) Assumes database and user already exist - only manages constraints and schemas.
+- Environment-first configuration with comprehensive validation
+- Small, explicit API surface for services and knowledge graph modules
+- No schema assumptions - works with raw Cypher for maximum flexibility
+- Database and user must exist - focuses on operational concerns only
+- Thread-safe operations with proper session and driver management
 
-Environment Variables
----------------------
-Required
-- NEO4J_URI            e.g., bolt://localhost:7687 or neo4j+s://<host>:7687
-- NEO4J_USER
-- NEO4J_PASSWORD
+Environment Integration
+----------------------
+Required environment variables:
+- NEO4J_URI: Connection string (bolt://localhost:7687, neo4j+s://host:7687)
+- NEO4J_USER: Database username
+- NEO4J_PASSWORD: Database password
 
-Optional
-- NEO4J_DATABASE       (default: neo4j)
-- NEO4J_MAX_POOL_SIZE  (default: 50)
-- NEO4J_ENCRYPTION     (true|false; default: auto from URI scheme)
-- NEO4J_TRUST_ALL      (true|false; only for development; default: false)
+Optional configuration:
+- NEO4J_DATABASE: Target database (default: neo4j)
+- NEO4J_MAX_POOL_SIZE: Connection pool size (default: 50)
+- NEO4J_ENCRYPTION: Enable/disable encryption (default: auto from URI)
+- NEO4J_TRUST_ALL: Trust all certificates for development (default: false)
 
 Examples
 --------
 >>> from polymer_extractor.storage.neo4j_client import Neo4jClient
->>> kg = Neo4jClient()
->>> kg.health_check()
-{'ok': True, 'details': {'edition': 'community', 'version': '5.x', 'database': 'neo4j'}}
-
->>> kg.run("RETURN 1 AS ok", fetch="one")
-{'ok': 1}
-
->>> with kg.transaction(access_mode="write") as tx:
-...     tx.run("MERGE (p:Paper {doi:$doi})", doi="10.1234/foo")
+>>> 
+>>> # Basic operations
+>>> client = Neo4jClient()
+>>> health = client.health_check()
+>>> print(f"Neo4j {health['details']['version']} ready")
+>>> 
+>>> # Simple queries
+>>> result = client.run("RETURN 1 AS test", fetch="one") 
+>>> nodes = client.run("MATCH (n:Paper) RETURN n LIMIT 10", fetch="all")
+>>> 
+>>> # Transactional operations
+>>> with client.transaction(access_mode="write") as tx:
+...     tx.run("MERGE (p:Paper {doi: $doi}) SET p.title = $title", 
+...           {"doi": "10.1234/example", "title": "Sample Paper"})
+>>> 
+>>> # Schema management
+>>> client.create_unique_constraint("Paper", "doi")
+>>> client.upsert_node(label="Polymer", match={"name": "PDMS"}, 
+...                   on_create={"molecular_weight": 10000})
 
 Notes
 -----
-- Keep the client focused on connectivity, execution, and diagnostics.
-- Higher-level KG logic (canonicalization, validation, boosting) should live in
-  knowledge_graph/* modules and call into this client.
-- Database and user must exist before initializing the client.
+- Performance: Connection pooling minimizes overhead, O(1) query execution
+- Thread Safety: Driver and sessions are thread-safe, transactions are not
+- Error Handling: Comprehensive retry logic for transient failures
+- Memory: Streaming results for large queries to minimize memory usage
+- Security: Parameterized queries prevent Cypher injection attacks
 """
 
 from __future__ import annotations
@@ -64,7 +86,7 @@ from pathlib import Path
 from contextlib import contextmanager
 
 from dotenv import load_dotenv
-from neo4j import GraphDatabase, basic_auth
+from neo4j import GraphDatabase, basic_auth, TrustAll, TrustSystemCAs
 from neo4j.exceptions import Neo4jError, ServiceUnavailable, SessionExpired
 
 from polymer_extractor.utils.logging import Logger
@@ -109,20 +131,70 @@ def _record_to_dict(rec) -> Row:
 
 class Neo4jClient:
     """
-    Neo4j pooled driver wrapper.
+    Production-ready Neo4j driver wrapper with comprehensive operational features.
 
-    Responsibilities
-    ----------------
-    - Validate configuration and create a driver with sane defaults.
-    - Provide simple, safe Cypher execution helpers (read/write).
-    - Offer a transaction context manager with automatic commit/rollback.
-    - Provide health checks and structured error logging.
+    Summary
+    -------
+    Provides enterprise-grade Neo4j database operations with connection pooling,
+    health monitoring, transaction management, and schema operations.
 
-    Non-Responsibilities
-    --------------------
-    - No Cypher generation for domain logic (done in KG modules).
-    - No schema migrations (helpers available but not opinionated).
-    - No database creation (databases and users must exist).
+    Core Operations
+    ---------------
+    - Query execution: run(cypher, params, fetch="none|one|all")
+    - Transactions: transaction(access_mode="read|write") context manager
+    - Health monitoring: health_check(), check_database_exists()
+    - Schema management: create_unique_constraint(), create_exists_constraint()
+    - Upsert operations: upsert_node() for atomic MERGE operations
+
+    Parameters
+    ----------
+    uri : Optional[str], default None
+        Neo4j connection URI (uses NEO4J_URI env var if None)
+    user : Optional[str], default None
+        Database username (uses NEO4J_USER env var if None)
+    password : Optional[str], default None
+        Database password (uses NEO4J_PASSWORD env var if None)
+    database : Optional[str], default None
+        Target database name (uses NEO4J_DATABASE env var or "neo4j")
+    max_pool_size : Optional[int], default None
+        Connection pool size (uses NEO4J_MAX_POOL_SIZE env var or 50)
+    encrypted : Optional[bool], default None
+        Enable encryption (auto-detected from URI scheme if None)
+    trust_all : Optional[bool], default None
+        Trust all certificates for development (uses NEO4J_TRUST_ALL env var)
+
+    Raises
+    ------
+    ConfigurationError
+        If required environment variables are missing or invalid
+    ServiceUnavailable
+        If Neo4j database is not accessible
+
+    Examples
+    --------
+    >>> # Environment-configured client
+    >>> client = Neo4jClient()
+    >>> health = client.health_check()
+    >>> print(f"Connected to Neo4j {health['details']['version']}")
+    >>> 
+    >>> # Explicit configuration
+    >>> client = Neo4jClient(uri="bolt://localhost:7687", user="neo4j", password="secret")
+    >>> 
+    >>> # Query operations
+    >>> result = client.run("MATCH (n:Paper) RETURN count(n) as total", fetch="one")
+    >>> papers = client.run("MATCH (p:Paper) RETURN p LIMIT 10", fetch="all")
+    >>> 
+    >>> # Transactional operations
+    >>> with client.transaction(access_mode="write") as tx:
+    ...     tx.run("CREATE (p:Paper {doi: $doi})", {"doi": "10.1234/example"})
+
+    Notes
+    -----
+    - Complexity: O(1) for single queries, O(n) for result processing
+    - Thread Safety: Driver and sessions thread-safe, transactions are single-threaded
+    - Memory: Streaming results for large datasets to minimize memory usage
+    - Performance: Connection pooling reduces overhead for frequent operations
+    - Security: All queries use parameterized execution to prevent injection
     """
 
     def __init__(
@@ -136,28 +208,64 @@ class Neo4jClient:
         trust_all: t.Optional[bool] = None,
     ) -> None:
         """
-        Initialize Neo4j client.
-        
-        Assumes the database already exists with proper permissions.
-        Will only create constraints and schemas as needed.
-        
+        Initialize Neo4j client with configuration validation and driver setup.
+
+        Summary
+        -------
+        Creates Neo4j driver with environment-based configuration and comprehensive validation.
+
         Parameters
         ----------
-        uri : str, optional
-            Neo4j URI (default: from NEO4J_URI env var)
-        user : str, optional
-            Neo4j user (default: from NEO4J_USER env var)
-        password : str, optional
-            Neo4j password (default: from NEO4J_PASSWORD env var)
-        database : str, optional
-            Neo4j database (default: from NEO4J_DATABASE env var or 'neo4j')
-        max_pool_size : int, optional
-            Max connections (default: from NEO4J_MAX_POOL_SIZE env var or 50)
-        encrypted : bool, optional
-            Use encryption (default: auto from URI scheme)
-        trust_all : bool, optional
-            Trust all certificates - DEVELOPMENT ONLY (default: False)
+        uri : Optional[str]
+            Neo4j connection URI (bolt://host:port, neo4j+s://host:port)
+        user : str
+            Database username for authentication
+        password : str
+            Database password for authentication
+        database : Optional[str]
+            Target database name (default: "neo4j")
+        max_pool_size : Optional[int]
+            Maximum connection pool size (default: 50)
+        encrypted : Optional[bool]
+            Enable TLS encryption (auto-detected from URI if None)
+        trust_all : Optional[bool]
+            Trust all certificates for development (default: False)
+
+        Raises
+        ------
+        ConfigurationError
+            If required parameters are missing or invalid
+        ServiceUnavailable
+            If initial connection to Neo4j fails
+
+        Examples
+        --------
+        >>> # Environment-based configuration (recommended)
+        >>> client = Neo4jClient()
+        >>> 
+        >>> # Explicit configuration for testing
+        >>> client = Neo4jClient(
+        ...     uri="bolt://localhost:7687",
+        ...     user="neo4j", 
+        ...     password="password"
+        ... )
+
+        Notes
+        -----
+        - Performance: O(1) - Establishes connection pool during initialization
+        - Side Effects: Logs driver creation and database validation
+        - Security: Credentials loaded from environment variables for production safety
+        - Security: Credentials loaded from environment variables for production safety
         """
+        self.logger = Logger()
+        
+        # Environment configuration
+        self.uri = uri or os.getenv("NEO4J_URI")
+        self.user = user or os.getenv("NEO4J_USER")
+        self.password = password or os.getenv("NEO4J_PASSWORD")
+        self.database = database or os.getenv("NEO4J_DATABASE", "neo4j")
+        
+        # Pool configuration
         self.logger = logger
         
         # Resolve config from env if not provided
@@ -178,11 +286,11 @@ class Neo4jClient:
         
         trust_all = trust_all or _env_bool("NEO4J_TRUST_ALL", False)
         
-        # Convert trust_all boolean to Neo4j trust enum value
+        # Convert trust_all boolean to Neo4j trusted_certificates enum value
         if trust_all:
-            trust_config = "TRUST_ALL_CERTIFICATES"
+            trusted_certificates = TrustAll()
         else:
-            trust_config = "TRUST_SYSTEM_CA_SIGNED_CERTIFICATES"
+            trusted_certificates = TrustSystemCAs()
         
         # Create driver
         try:
@@ -192,7 +300,7 @@ class Neo4jClient:
                 auth=auth,
                 max_connection_pool_size=max_pool,
                 encrypted=encrypted,
-                trust=trust_config,
+                trusted_certificates=trusted_certificates,
             )
             
             self.logger.info(
@@ -218,12 +326,40 @@ class Neo4jClient:
     # --------------------------------------------------------------------- #
     def health_check(self) -> Row:
         """
-        Perform a health check on the Neo4j connection.
+        Comprehensive health check with Neo4j server diagnostics.
+
+        Summary
+        -------
+        Validates database connectivity and retrieves server version information
+        for monitoring and troubleshooting purposes.
 
         Returns
         -------
         Row
-            Health status and server details.
+            Health status dictionary with server details:
+            - ok (bool): True if connection successful
+            - details (dict): Server name, version, edition, database name
+            - error (str): Error message if health check fails
+
+        Raises
+        ------
+        No exceptions raised - errors are captured in return value
+
+        Examples
+        --------
+        >>> client = Neo4jClient()
+        >>> health = client.health_check()
+        >>> if health["ok"]:
+        ...     print(f"Connected to {health['details']['name']} {health['details']['version']}")
+        ... else:
+        ...     print(f"Health check failed: {health['error']}")
+
+        Notes
+        -----
+        - Complexity: O(1) - Single lightweight diagnostic query
+        - Side Effects: Logs health check results for monitoring
+        - Fallback: Uses simple connectivity test if dbms.components() unavailable
+        - Non-blocking: Safe to call frequently for health monitoring
         """
         try:
             with self.driver.session(database=self.database) as session:
@@ -338,29 +474,81 @@ class Neo4jClient:
         retry_backoff: float = 0.25,
     ) -> t.Union[None, Row, Rows]:
         """
-        Execute a Cypher query.
+        Execute parameterized Cypher query with comprehensive error handling.
+
+        Summary
+        -------
+        Runs Cypher query against Neo4j with automatic retries, parameterization,
+        and flexible result fetching patterns.
 
         Parameters
         ----------
         cypher : str
-            Cypher query to execute.
-        params : Optional[Mapping[str, Any]]
-            Parameters for the Cypher query.
-        db : Optional[str]
-            Database to run against (default: self.database).
-        fetch : Literal["none", "one", "all"]
-            How to fetch results: "none" (no fetch), "one" (single record), "all" (all records).
-        access_mode : Literal["read", "write"]
-            Transaction access mode.
-        retries : int
-            Number of retry attempts for transient errors.
-        retry_backoff : float
-            Backoff multiplier for retries.
+            Cypher query string with $parameter placeholders
+        params : Optional[Mapping[str, Any]], default None
+            Parameter values for query placeholders
+        db : Optional[str], default None
+            Target database name (uses self.database if None)
+        fetch : Literal["none", "one", "all"], default "none"
+            Result fetching strategy:
+            - "none": No results returned (for writes/mutations)
+            - "one": Single record (uses first result)
+            - "all": All records as list
+        access_mode : Literal["read", "write"], default "write"
+            Session access mode for Neo4j optimization
+        retries : int, default 1
+            Number of retry attempts on transient failures
+        retry_backoff : float, default 0.25
+            Exponential backoff delay in seconds
 
         Returns
         -------
         Union[None, Row, Rows]
-            Query results based on fetch parameter.
+            - None if fetch="none"
+            - Row (dict) if fetch="one"
+            - Rows (List[dict]) if fetch="all"
+
+        Raises
+        ------
+        CypherSyntaxError
+            If Cypher query syntax is invalid
+        ConstraintError
+            If query violates database constraints
+        ServiceUnavailable
+            If Neo4j database is unreachable after retries
+
+        Examples
+        --------
+        >>> client = Neo4jClient()
+        >>> 
+        >>> # Create operation (no results)
+        >>> client.run(
+        ...     "CREATE (p:Paper {doi: $doi, title: $title})",
+        ...     {"doi": "10.1234/example", "title": "Sample Paper"}
+        ... )
+        >>> 
+        >>> # Single result query
+        >>> paper = client.run(
+        ...     "MATCH (p:Paper {doi: $doi}) RETURN p",
+        ...     {"doi": "10.1234/example"},
+        ...     fetch="one"
+        ... )
+        >>> 
+        >>> # Multiple results query
+        >>> papers = client.run(
+        ...     "MATCH (p:Paper) WHERE p.year = $year RETURN p LIMIT 10",
+        ...     {"year": 2023},
+        ...     fetch="all",
+        ...     access_mode="read"
+        ... )
+
+        Notes
+        -----
+        - Complexity: O(n) where n is result set size
+        - Security: All queries use parameterized execution to prevent injection
+        - Performance: Read-only queries should use access_mode="read" for optimization
+        - Memory: fetch="all" loads complete result set - use pagination for large datasets
+        - Thread Safety: Session creation is thread-safe, individual transactions are not
         """
         database = db or self.database
         mode = _WRITE if access_mode == "write" else _READ
@@ -414,24 +602,58 @@ class Neo4jClient:
         access_mode: t.Literal["read", "write"] = "write",
     ):
         """
-        Context manager for Neo4j transactions.
+        Context manager for atomic Neo4j transactions with automatic commit/rollback.
+
+        Summary
+        -------
+        Provides transactional scope for multiple Cypher operations with ACID guarantees
+        and automatic error handling.
 
         Parameters
         ----------
-        db : Optional[str]
-            Database to run against (default: self.database).
-        access_mode : Literal["read", "write"]
-            Transaction access mode.
+        db : Optional[str], default None
+            Target database name (uses self.database if None)
+        access_mode : Literal["read", "write"], default "write"
+            Transaction access mode for Neo4j optimization:
+            - "read": Read-only operations for better performance
+            - "write": Write operations with full transaction guarantees
 
         Yields
         ------
         neo4j.Transaction
-            Neo4j transaction object.
+            Neo4j transaction object for executing Cypher statements
+
+        Raises
+        ------
+        TransactionError
+            If transaction fails and is automatically rolled back
+        ServiceUnavailable
+            If database connection is lost during transaction
 
         Examples
         --------
-        >>> with kg.transaction(access_mode="write") as tx:
-        ...     tx.run("MERGE (p:Paper {doi: $doi})", doi="10.1234/test")
+        >>> client = Neo4jClient()
+        >>> 
+        >>> # Write transaction with multiple operations
+        >>> with client.transaction(access_mode="write") as tx:
+        ...     tx.run("MERGE (p:Paper {doi: $doi})", {"doi": "10.1234/example"})
+        ...     tx.run("MERGE (a:Author {name: $name})", {"name": "Smith, J."})
+        ...     tx.run("MATCH (p:Paper {doi: $doi}), (a:Author {name: $name}) "
+        ...            "MERGE (a)-[:AUTHORED]->(p)", 
+        ...            {"doi": "10.1234/example", "name": "Smith, J."})
+        >>> 
+        >>> # Read-only transaction for consistent queries
+        >>> with client.transaction(access_mode="read") as tx:
+        ...     papers = list(tx.run("MATCH (p:Paper) RETURN p LIMIT 100"))
+        ...     authors = list(tx.run("MATCH (a:Author) RETURN a LIMIT 50"))
+
+        Notes
+        -----
+        - Complexity: O(1) for transaction setup, O(n) for contained operations
+        - ACID Properties: Full atomicity, consistency, isolation, durability guarantees
+        - Thread Safety: Individual transactions are single-threaded, concurrent transactions allowed
+        - Performance: Read transactions have lower overhead and better concurrency
+        - Side Effects: Automatic rollback on any exception, logging of transaction failures
         """
         database = db or self.database
         mode = _WRITE if access_mode == "write" else _READ
@@ -454,14 +676,40 @@ class Neo4jClient:
     # --------------------------------------------------------------------- #
     def create_unique_constraint(self, label: str, property_name: str) -> None:
         """
-        Create a unique constraint on a label and property.
+        Create unique constraint on node label and property for data integrity.
+
+        Summary
+        -------
+        Establishes uniqueness constraint to prevent duplicate values and enable
+        efficient node lookups via indexed property.
 
         Parameters
         ----------
         label : str
-            Node label.
+            Node label for constraint (e.g., "Paper", "Author", "Polymer")
         property_name : str
-            Property name.
+            Property name that must be unique (e.g., "doi", "email", "cas_number")
+
+        Raises
+        ------
+        ConstraintError
+            If constraint creation fails due to existing duplicate values
+        CypherSyntaxError
+            If label or property name contains invalid characters
+
+        Examples
+        --------
+        >>> client = Neo4jClient()
+        >>> client.create_unique_constraint("Paper", "doi")
+        >>> client.create_unique_constraint("Author", "orcid_id")
+        >>> client.create_unique_constraint("Polymer", "cas_number")
+
+        Notes
+        -----
+        - Complexity: O(n) where n is number of existing nodes to validate
+        - Side Effects: Creates database index for improved query performance
+        - Idempotent: Safe to call multiple times, uses IF NOT EXISTS
+        - Performance: Dramatically improves MATCH and MERGE operations on constrained property
         """
         constraint_name = f"unique_{label}_{property_name}".lower()
         cypher = f"CREATE CONSTRAINT {constraint_name} IF NOT EXISTS FOR (n:{label}) REQUIRE n.{property_name} IS UNIQUE"
@@ -474,14 +722,40 @@ class Neo4jClient:
 
     def create_exists_constraint(self, label: str, property_name: str) -> None:
         """
-        Create an existence constraint on a label and property.
+        Create existence constraint to ensure required properties are present.
+
+        Summary
+        -------
+        Enforces NOT NULL constraint on node properties to guarantee data completeness
+        and prevent incomplete records.
 
         Parameters
         ----------
         label : str
-            Node label.
+            Node label for constraint (e.g., "Paper", "Dataset", "Model")
         property_name : str
-            Property name.
+            Property that must exist (e.g., "title", "created_at", "file_path")
+
+        Raises
+        ------
+        ConstraintError
+            If constraint creation fails due to existing nodes with missing property
+        CypherSyntaxError
+            If label or property name contains invalid characters
+
+        Examples
+        --------
+        >>> client = Neo4jClient()
+        >>> client.create_exists_constraint("Paper", "title")
+        >>> client.create_exists_constraint("Dataset", "created_at")
+        >>> client.create_exists_constraint("Model", "version")
+
+        Notes
+        -----
+        - Complexity: O(n) where n is number of existing nodes to validate
+        - Side Effects: Validates all existing nodes have the required property
+        - Data Quality: Prevents incomplete records from being created
+        - Idempotent: Safe to call multiple times, uses IF NOT EXISTS
         """
         constraint_name = f"exists_{label}_{property_name}".lower()
         cypher = f"CREATE CONSTRAINT {constraint_name} IF NOT EXISTS FOR (n:{label}) REQUIRE n.{property_name} IS NOT NULL"
@@ -505,20 +779,59 @@ class Neo4jClient:
         db: t.Optional[str] = None,
     ) -> None:
         """
-        Upsert (MERGE) a node with conditional property setting.
+        Atomic upsert (MERGE) operation with conditional property setting.
+
+        Summary
+        -------
+        Performs MERGE operation to create node if not exists, or update existing node,
+        with different property sets for create vs. match scenarios.
 
         Parameters
         ----------
         label : str
-            Node label.
+            Node label for the upsert operation
         match : Mapping[str, Any]
-            Properties to match on.
-        on_create : Optional[Mapping[str, Any]]
-            Properties to set only when creating.
-        on_match : Optional[Mapping[str, Any]]
-            Properties to set only when matching existing node.
-        db : Optional[str]
-            Database to run against.
+            Properties to match existing nodes (should include unique identifiers)
+        on_create : Optional[Mapping[str, Any]], default None
+            Properties to set only when creating new node
+        on_match : Optional[Mapping[str, Any]], default None
+            Properties to set only when matching existing node
+        db : Optional[str], default None
+            Target database name (uses self.database if None)
+
+        Raises
+        ------
+        ConstraintError
+            If operation violates unique constraints
+        CypherSyntaxError
+            If generated Cypher contains syntax errors
+
+        Examples
+        --------
+        >>> client = Neo4jClient()
+        >>> 
+        >>> # Simple upsert with creation timestamp
+        >>> client.upsert_node(
+        ...     label="Paper",
+        ...     match={"doi": "10.1234/example"},
+        ...     on_create={"created_at": "2023-01-01T10:00:00Z", "status": "new"},
+        ...     on_match={"last_accessed": "2023-06-01T15:30:00Z"}
+        ... )
+        >>> 
+        >>> # Upsert polymer with molecular data
+        >>> client.upsert_node(
+        ...     label="Polymer",
+        ...     match={"name": "PDMS", "supplier": "Sigma"},
+        ...     on_create={"discovered_date": "2023-01-01", "version": 1},
+        ...     on_match={"version": 2, "updated_at": "2023-06-01"}
+        ... )
+
+        Notes
+        -----
+        - Complexity: O(log n) for unique property lookup, O(1) for property updates
+        - Atomicity: Single Cypher MERGE operation ensures consistency
+        - Performance: Most efficient way to handle create-or-update patterns
+        - Index Usage: Leverages unique constraints for optimal performance
         """
         # Build MERGE clause
         match_props = ", ".join(f"{k}: ${k}" for k in match.keys())

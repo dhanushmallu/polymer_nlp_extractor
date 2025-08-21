@@ -30,21 +30,24 @@ import time
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
-from fastapi import APIRouter, UploadFile, File, HTTPException, Form, BackgroundTasks
+from fastapi import APIRouter, UploadFile, File, Form, BackgroundTasks
 from fastapi.responses import JSONResponse, FileResponse
 from pydantic import BaseModel
 
 from polymer_extractor.services.grobid_service import GrobidService
 from polymer_extractor.utils.logging import Logger
 from polymer_extractor.utils.paths import WORKSPACE_DIR
+from polymer_extractor.utils.paths import ServicePathHandler
+from polymer_extractor.utils import responses as R
 
 logger = Logger()
 
 # Initialize router
 router = APIRouter(prefix="/grobid", tags=["GROBID"])
 
-# Initialize GROBID service
+# Initialize GROBID service and path handler
 grobid_service = GrobidService()
+service_path_handler = ServicePathHandler()
 
 
 # === Response Models ===
@@ -111,7 +114,7 @@ async def start_grobid_server(
 
     except Exception as e:
         logger.error("Failed to start GROBID server via API", source="grobid_api", error=e, event_type="server_start")
-        raise HTTPException(status_code=500, detail=f"Failed to start GROBID server: {str(e)}")
+        raise R.raise_http(500, status_label="error", message="Failed to start GROBID server", details={"error": str(e)})
 
 
 @router.post("/server/stop", response_model=ServerStatusResponse)
@@ -137,7 +140,7 @@ async def stop_grobid_server():
 
     except Exception as e:
         logger.error("Failed to stop GROBID server via API", source="grobid_api", error=e, event_type="server_stop")
-        raise HTTPException(status_code=500, detail=f"Failed to stop GROBID server: {str(e)}")
+        raise R.raise_http(500, status_label="error", message="Failed to stop GROBID server", details={"error": str(e)})
 
 
 @router.get("/server/status", response_model=ServerStatusResponse)
@@ -197,10 +200,7 @@ async def process_uploaded_file(
         allowed_extensions = {'.pdf', '.xml', '.html', '.htm'}
         file_ext = Path(file.filename).suffix.lower()
         if file_ext not in allowed_extensions:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Unsupported file type: {file_ext}. Allowed: {', '.join(allowed_extensions)}"
-            )
+            raise R.raise_http(400, status_label="failure", message="Unsupported file type", details={"ext": file_ext, "allowed": sorted(list(allowed_extensions))})
 
         # Get original filename stem for consistent naming
         original_stem = Path(file.filename).stem
@@ -233,49 +233,57 @@ async def process_uploaded_file(
             storage_errors=result.get('storage_errors', [])
         )
 
-    except HTTPException:
+    except Exception:
         raise
     except Exception as e:
         logger.error(f"Processing failed for uploaded file", source="grobid_api", error=e)
         if temp_path and temp_path.exists():
             background_tasks.add_task(cleanup_temp_file, temp_path)
-        raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
+    raise R.raise_http(500, status_label="error", message="Processing failed", details={"error": str(e)})
 
 
 @router.post("/process/file", response_model=ProcessingResult)
 async def process_local_file(
-        file_path: str = Form(..., description="Path to local file to process")
+        file_path: str = Form(..., description="Path to local file to process (absolute, relative, storage, or URL)")
 ):
     """
     Process a local file by its file path.
+    
+    Supports flexible path formats:
+    - Absolute paths: /full/path/to/file.pdf
+    - Relative paths: relative/path/file.pdf (from STORAGE_PATH root) 
+    - Storage paths: raw_inputs/file.pdf
+    - URLs: https://example.com/file.pdf (downloads to storage/downloads/)
 
     Parameters
     ----------
     file_path : str
-        Absolute path to the file to process.
+        Path to the file to process. Can be absolute, relative, storage, or URL.
 
     Returns
     -------
     ProcessingResult
         Processing results including metadata and file paths.
     """
-    path = Path(file_path)
-
-    if not path.exists():
-        raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
-
-    if not path.is_file():
-        raise HTTPException(status_code=400, detail=f"Path is not a file: {file_path}")
-
     try:
-        logger.info(f"Processing local file: {file_path}", source="grobid_api", event_type="process_local")
+        logger.info(f"Processing file with path: {file_path}", source="grobid_api", event_type="process_local")
+        
+        # Resolve the input path using flexible path handling
+        resolved_path = service_path_handler.resolve_input_path(file_path)
+        
+        if not resolved_path.exists():
+            raise R.raise_http(404, status_label="failure", message="File not found", details={"path": file_path})
 
-        result = grobid_service.process_document(path)
+        if not resolved_path.is_file():
+            raise R.raise_http(400, status_label="failure", message="Path is not a file", details={"path": file_path})
+
+        # Process the document
+        result = grobid_service.process_document(resolved_path)
 
         return ProcessingResult(
             success=True,
-            message=f"Successfully processed {path.name}",
-            original_file=str(path),
+            message=f"Successfully processed {resolved_path.name}",
+            original_file=str(resolved_path),
             pdf_file=result.get('pdf_file'),
             metadata=result.get('metadata', {}),
             local_tei_path=result.get('local_tei_path'),
@@ -283,10 +291,12 @@ async def process_local_file(
             storage_errors=result.get('storage_errors', [])
         )
 
+    except Exception:
+        raise
     except Exception as e:
-        logger.error(f"Failed to process local file: {file_path}", source="grobid_api", error=e,
+        logger.error(f"Failed to process file: {file_path}", source="grobid_api", error=e,
                      event_type="process_local")
-        raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
+    raise R.raise_http(500, status_label="error", message="Processing failed", details={"error": str(e)})
 
 
 @router.post("/process/batch", response_model=BatchProcessingResult)
@@ -308,7 +318,7 @@ async def process_batch_files(
         Batch processing results with individual file results.
     """
     if not files:
-        raise HTTPException(status_code=400, detail="No files provided")
+        raise R.raise_http(400, status_label="failure", message="No files provided")
 
     logger.info(f"Starting batch processing of {len(files)} files", source="grobid_api", event_type="batch_process")
 
@@ -422,7 +432,7 @@ async def download_tei_file(filename: str):
     file_path = Path(EXTRACTED_XML_DIR) / filename
 
     if not file_path.exists():
-        raise HTTPException(status_code=404, detail=f"TEI file not found: {filename}")
+        raise R.raise_http(404, status_label="failure", message="TEI file not found", details={"filename": filename})
 
     logger.info(f"Downloading TEI file: {filename}", source="grobid_api", event_type="download_tei")
 
