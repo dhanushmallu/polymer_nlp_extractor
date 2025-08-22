@@ -576,6 +576,39 @@ pkill -f uvicorn                     # Kill existing uvicorn processes
 ./server.sh                          # Restart
 ```
 
+### **Script Line Ending Issues (Windows/Cross-Platform)**
+
+**Problem**: If `./server.sh` fails with cryptic errors like "command not found" or shows Windows-style carriage return characters (`^M`), the script has Windows CRLF line endings instead of Unix LF line endings.
+
+**Symptoms**:
+```bash
+./server.sh status
+# Error: ./server.sh: line 2: $'\r': command not found
+# Or: bash: ./server.sh: /bin/bash^M: bad interpreter
+```
+
+**Quick Fix**:
+```bash
+# Fix line endings and retry
+sed -i 's/\r$//' server.sh
+./server.sh status
+```
+
+**Prevention**: 
+- If developing on Windows, configure Git to handle line endings properly:
+  ```bash
+  git config --global core.autocrlf input  # For Unix-style projects
+  ```
+- Use editors that preserve Unix line endings (VS Code, vim, nano)
+- Avoid editing files directly on Windows without proper line ending configuration
+
+**Verification**: After fixing, the script should work normally:
+```bash
+ls -la server.sh                     # Should show execute permissions
+file server.sh                       # Should show "POSIX shell script"
+./server.sh status                   # Should run without line ending errors
+```
+
 ### **Database Connection Issues**
 
 ```bash

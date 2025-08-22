@@ -36,22 +36,35 @@ CREATE EXTENSION IF NOT EXISTS "pg_trgm";
 CREATE TABLE research_papers (
     id SERIAL PRIMARY KEY,
     file_name VARCHAR(255) UNIQUE NOT NULL,
-    doi VARCHAR(255),
+    original_filename VARCHAR(255),
+    file_size BIGINT,
+    file_hash VARCHAR(255),
     title TEXT,
-    authors TEXT NOT NULL,
-    journal VARCHAR(255),
-    publication_date DATE,
+    authors TEXT,
     abstract TEXT,
+    doi VARCHAR(255),
+    journal VARCHAR(255),
+    publication_year INTEGER,
+    publication_date DATE,
+    keywords TEXT[],
+    processing_status VARCHAR(20) DEFAULT 'pending' CHECK (processing_status IN ('pending', 'processing', 'completed', 'failed')),
     grobid_version VARCHAR(50),
     -- Multi-backend storage references
-    storage_key VARCHAR(500), -- Primary storage reference (used by StorageManager)
+    storage_key TEXT NOT NULL, -- Primary storage reference (used by StorageManager)
     local_path VARCHAR(500), -- Local storage path (when local backend active)
     appwrite_file_id VARCHAR(255), -- Appwrite storage ID (when appwrite backend active)
     s3_key VARCHAR(500), -- S3 object key (when s3 backend active)
-    storage_backends TEXT[], -- Array of active backends for this file ['local', 'appwrite', 's3']
-    primary_backend VARCHAR(20), -- Primary backend used for this file
-    file_size BIGINT,
-    processing_status VARCHAR(20) DEFAULT 'pending' CHECK (processing_status IN ('pending', 'processing', 'completed', 'failed')),
+    storage_backends TEXT[] NOT NULL, -- Array of active backends for this file ['local', 'appwrite', 's3']
+    primary_backend VARCHAR(20) NOT NULL, -- Primary backend used for this file
+    tei_storage_key VARCHAR(255), -- TEI XML storage key
+    -- Session and user context (added by multi-user extension)
+    session_id UUID,
+    user_id VARCHAR(255),
+    uploaded_by VARCHAR(255),
+    access_level VARCHAR(20) DEFAULT 'private' CHECK (access_level IN ('private', 'shared', 'public')),
+    -- Metadata and timestamps
+    metadata JSONB DEFAULT '{}',
+    extraction_metadata JSONB DEFAULT '{}',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -63,6 +76,13 @@ CREATE INDEX idx_papers_filename ON research_papers(file_name);
 CREATE INDEX idx_papers_storage_key ON research_papers(storage_key);
 CREATE INDEX idx_papers_primary_backend ON research_papers(primary_backend);
 CREATE INDEX idx_papers_storage_backends ON research_papers USING GIN(storage_backends);
+CREATE INDEX idx_papers_session_id ON research_papers(session_id);
+CREATE INDEX idx_papers_user_id ON research_papers(user_id);
+CREATE INDEX idx_papers_uploaded_by ON research_papers(uploaded_by);
+CREATE INDEX idx_papers_access_level ON research_papers(access_level);
+CREATE INDEX idx_papers_publication_year ON research_papers(publication_year);
+CREATE INDEX idx_papers_tei_storage_key ON research_papers(tei_storage_key);
+CREATE INDEX idx_papers_extraction_metadata ON research_papers USING GIN(extraction_metadata);
 
 -- System logs for comprehensive logging and debugging
 CREATE TABLE system_logs (

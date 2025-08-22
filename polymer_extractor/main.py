@@ -13,7 +13,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from server_manager import ServerManager
 
 # Phase 0D: Removed finetune import as training is now handled exclusively by notebook
-from api import groundtruth, preprocessing, setup, grobid, ensemble_inference, evaluation, models_sync
+from api import groundtruth, preprocessing, setup, grobid, ensemble_inference, evaluation, models_sync, session
 
 # Global setup service instance
 setup_service = None
@@ -122,6 +122,9 @@ app = FastAPI(
 
 # Include Setup API router
 app.include_router(setup.router, prefix="/api", tags=["Setup"])
+
+# Include Session Management API router
+app.include_router(session.router, prefix="/api", tags=["Session"])
 
 # Include GROBID API router
 app.include_router(grobid.router, prefix="/api", tags=["GROBID"])
