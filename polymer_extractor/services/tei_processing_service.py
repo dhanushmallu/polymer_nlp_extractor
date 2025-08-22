@@ -9,7 +9,7 @@ Key Responsibilities:
   - Parses and cleans TEI XML
   - Preserves abstract content
   - Relabels structural tags (figures, tables, formulas)
-  - Uploads cleaned TEI with `_cleaned` suffix to Appwrite
+  - Uploads cleaned TEI with `_cleaned` suffix to storage
   - Updates existing metadata documents (only missing fields)
   - Returns API-ready response without triggering tokenization or windowing
 """
@@ -20,10 +20,11 @@ from pathlib import Path
 
 from lxml import etree
 
-from polymer_extractor.storage.bucket_manager import BucketManager
+from polymer_extractor.storage.bucket_client import BucketClient
 from polymer_extractor.storage.database_manager import DatabaseManager
 from polymer_extractor.utils.logging import Logger
-from polymer_extractor.utils.paths import PROCESSED_XML_DIR
+from polymer_extractor.utils.paths import PROCESSED_XML_DIR, get_storage_path, get_local_path
+from polymer_extractor.utils.paths import path_resolver
 
 TEI_NS = "http://www.tei-c.org/ns/1.0"
 NSMAP = {"tei": TEI_NS}
@@ -41,7 +42,7 @@ class TEIProcessingService:
     }
 
     def __init__(self):
-        self.bucket = BucketManager()
+        self.bucket = BucketClient()
         self.db = DatabaseManager()
 
     def process(self, input_tei_path: str, existing_metadata: dict = None) -> dict:
@@ -53,7 +54,7 @@ class TEIProcessingService:
         input_tei_path : str
             Path to the TEI XML file.
         existing_metadata : dict, optional
-            Previously stored Appwrite metadata, used to avoid duplicate writes.
+            Previously stored metadata, used to avoid duplicate writes.
 
         Returns
         -------
@@ -84,8 +85,9 @@ class TEIProcessingService:
 
             # Upload cleaned file
             storage_success, upload_resp, storage_errors = self._upload_cleaned_tei(cleaned_path)
+            storage_path = path_resolver.to_storage_path(cleaned_path, "processed_xml")
             if storage_success:
-                extracted_meta["file_url"] = self.bucket.get_file_url("processed_xml_bucket", cleaned_file_name)
+                extracted_meta["file_url"] = storage_path
 
             # Update metadata
             record = existing_metadata or {}
@@ -101,14 +103,14 @@ class TEIProcessingService:
             return {
                 "success": True,
                 "message": f"Successfully processed TEI: {cleaned_file_name}",
-                "cleaned_tei_path": cleaned_path,
+                "cleaned_tei_path": storage_path,
                 "metadata": record,
                 "storage_success": storage_success,
                 "storage_errors": storage_errors,
                 "next_stage_payload": {
                     "file_name": cleaned_file_name,
                     "metadata": record,
-                    "cleaned_tei_path": cleaned_path
+                    "cleaned_tei_path": get_storage_path("processed_xml", cleaned_file_name)
                 }
             }
 
@@ -172,8 +174,16 @@ class TEIProcessingService:
 
     def _upload_cleaned_tei(self, cleaned_path: str):
         try:
-            upload_resp = self.bucket.upload_file("processed_xml_bucket", cleaned_path)
-            return True, upload_resp, []
+            # Read file content for upload
+            with open(cleaned_path, 'rb') as f:
+                content = f.read()
+            
+            upload_resp = self.bucket.upload_file(
+                file_path=get_storage_path("processed_xml", Path(cleaned_path).name),
+                content=content,
+                metadata={"source": "tei_processing", "original_path": cleaned_path}
+            )
+            return upload_resp.get("success", False), upload_resp, []
         except Exception as e:
             return False, None, [str(e)]
 
@@ -183,9 +193,9 @@ class TEIProcessingService:
             candidates = self.db.list_records("file_metadata")
             match = next((doc for doc in candidates if doc.get("file_name") == file_name), None)
             if match:
-                self.db.update_record("file_metadata", document_id=match["$id"], data=metadata)
+                self.db.update_record("file_metadata", match["$id"], metadata)
             else:
-                self.db.create_record("file_metadata", data=metadata)
+                self.db.create_record("file_metadata", metadata)
         except Exception as e:
             logger.error(f"Failed to update metadata for {metadata.get('file_name')}",
                          source="TEIProcessingService._update_metadata", error=e)

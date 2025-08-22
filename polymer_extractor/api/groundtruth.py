@@ -19,12 +19,13 @@ Endpoints:
 from pathlib import Path
 from typing import List, Dict, Any
 
-from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks
+from fastapi import APIRouter, UploadFile, File, BackgroundTasks
 from fastapi.responses import JSONResponse, FileResponse
 from pydantic import BaseModel
 
 from polymer_extractor.services.groundtruth_service import GroundTruthService
 from polymer_extractor.utils.logging import Logger
+from polymer_extractor.utils import responses as R
 
 logger = Logger()
 
@@ -88,10 +89,7 @@ async def upload_ground_truth(
     allowed_extensions = {'.csv', '.json'}
     file_ext = Path(file.filename).suffix.lower()
     if file_ext not in allowed_extensions:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported file type: {file_ext}. Allowed types: {', '.join(allowed_extensions)}"
-        )
+        raise R.raise_http(400, status_label="failure", message="Unsupported file type", details={"ext": file_ext, "allowed": sorted(list(allowed_extensions))})
 
     # Save uploaded file to temp location
     temp_dir = gt_service.ground_truth_dir / "uploads"
@@ -122,7 +120,7 @@ async def upload_ground_truth(
 
     except Exception as e:
         logger.error(f"Failed to process ground truth file: {file.filename}", source="groundtruth_api", error=e)
-        raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
+        raise R.raise_http(500, status_label="error", message="Processing failed", details={"error": str(e)})
 
 
 @router.get("/list", response_model=DatasetListResponse)
@@ -140,7 +138,7 @@ async def list_ground_truth_datasets():
         return DatasetListResponse(count=len(datasets), datasets=datasets)
     except Exception as e:
         logger.error("Failed to list ground truth datasets", source="groundtruth_api", error=e)
-        raise HTTPException(status_code=500, detail=f"Failed to list datasets: {str(e)}")
+        raise R.raise_http(500, status_label="error", message="Failed to list datasets", details={"error": str(e)})
 
 
 @router.get("/get/{dataset_id}", response_class=FileResponse)
@@ -173,7 +171,7 @@ async def download_ground_truth_dataset(dataset_id: str):
 
     except Exception as e:
         logger.error(f"Failed to retrieve ground truth dataset: {dataset_id}", source="groundtruth_api", error=e)
-        raise HTTPException(status_code=404, detail=f"Dataset not found: {dataset_id}")
+        raise R.raise_http(404, status_label="failure", message="Dataset not found", details={"dataset_id": dataset_id})
 
 
 @router.delete("/remove/{dataset_id}", response_model=DeleteResponse)
@@ -205,7 +203,7 @@ async def delete_ground_truth_dataset(dataset_id: str):
 
         file_id = metadata.get('appwrite_file_id')
         if file_id:
-            gt_service.bucket_manager.delete_file("datasets_bucket", file_id)
+            gt_service.bucket_manager.delete_file("datasets", file_id)
             logger.info(f"Deleted ground truth file from Appwrite: {file_id}", source="groundtruth_api")
 
         return DeleteResponse(
@@ -216,4 +214,4 @@ async def delete_ground_truth_dataset(dataset_id: str):
 
     except Exception as e:
         logger.error(f"Failed to delete ground truth dataset: {dataset_id}", source="groundtruth_api", error=e)
-        raise HTTPException(status_code=500, detail=f"Failed to delete dataset: {str(e)}")
+        raise R.raise_http(500, status_label="error", message="Failed to delete dataset", details={"error": str(e), "dataset_id": dataset_id})

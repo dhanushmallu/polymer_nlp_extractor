@@ -4,11 +4,10 @@
 GROBID Service for Polymer NLP Extractor.
 
 Provides comprehensive document processing capabilities using GROBID server:
-- Server lifecycle management (start/stop/status)
 - Document format validation and conversion
 - TEI XML extraction and cleaning
 - Metadata extraction and storage
-- Integration with Appwrite for persistent storage
+- Integration with BucketClient for persistent storage
 
 Key Features:
 - Supports PDF, XML, and HTML input formats
@@ -20,10 +19,13 @@ Key Features:
 - Comprehensive error handling and logging
 
 Dependencies:
-- GROBID server installation
+- GROBID server (managed externally via server_manager)
 - WeasyPrint (for HTML to PDF conversion)
 - ReportLab (for XML to PDF conversion)
-- Appwrite Python SDK
+- BucketClient for storage operations
+
+Note: Server management is handled by the central server_manager.
+      This service focuses on document processing operations only.
 """
 
 import os
@@ -52,9 +54,10 @@ except ImportError:
     REPORTLAB_AVAILABLE = False
 
 from polymer_extractor.storage.database_manager import DatabaseManager
-from polymer_extractor.storage.bucket_manager import BucketManager
+from polymer_extractor.storage.bucket_client import BucketClient
 from polymer_extractor.utils.logging import Logger
-from polymer_extractor.utils.paths import WORKSPACE_DIR, EXTRACTED_XML_DIR
+from polymer_extractor.utils.paths import WORKSPACE_DIR, EXTRACTED_XML_DIR, get_storage_path, get_local_path
+from polymer_extractor.utils.paths import path_resolver
 
 logger = Logger()
 
@@ -65,6 +68,9 @@ class GrobidService:
 
     Manages the complete workflow from document ingestion to metadata storage,
     with built-in resilience and non-blocking storage operations.
+    
+    Note: Server management is handled by the central server_manager.
+          This service focuses on document processing operations only.
     """
 
     def __init__(self, server_url: str = None):
@@ -84,97 +90,15 @@ class GrobidService:
             server_url = f"http://{grobid_host}:{grobid_port}"
             
         self.grobid_server_url = server_url
-        self.grobid_process = None
         self.supported_formats = {'.pdf', '.xml', '.html', '.htm'}
 
         # Initialize storage services
         self.db_manager = DatabaseManager()
-        self.bucket_manager = BucketManager()
+        self.bucket_client = BucketClient()
 
         logger.info(f"GROBID Service initialized with server: {server_url}", source="GrobidService")
 
-    # === SERVER MANAGEMENT ===
-
-    def start_server(self, grobid_home: str = None, port: int = 8070) -> None:
-        """
-        Start GROBID server in background process.
-
-        Parameters
-        ----------
-        grobid_home : str, optional
-            Path to GROBID installation directory.
-        port : int, optional
-            Server port. Defaults to 8070.
-
-        Raises
-        ------
-        RuntimeError
-            If server fails to start or GROBID installation not found.
-        """
-        if grobid_home is None:
-            grobid_home = os.path.join(WORKSPACE_DIR, "grobid-0.8.2")
-
-        grobid_path = Path(grobid_home)
-
-        if not grobid_path.exists():
-            raise RuntimeError(f"GROBID installation not found at: {grobid_home}")
-
-        gradle_wrapper = grobid_path / "gradlew"
-        if not gradle_wrapper.exists():
-            raise RuntimeError(f"Gradle wrapper not found at: {gradle_wrapper}")
-
-        try:
-            # Check if already running
-            try:
-                self.check_server_status()
-                logger.info("GROBID server already running", source="GrobidService")
-                return
-            except:
-                pass
-
-            logger.info(f"Starting GROBID server from: {grobid_home}", source="GrobidService")
-
-            # Start GROBID server
-            self.grobid_process = subprocess.Popen(
-                [str(gradle_wrapper), "run"],
-                cwd=str(grobid_path),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                shell=False
-            )
-
-            # Wait for server to be ready
-            max_attempts = 30
-            for attempt in range(max_attempts):
-                try:
-                    time.sleep(2)
-                    self.check_server_status()
-                    logger.info(f"GROBID server started successfully (attempt {attempt + 1})", source="GrobidService")
-                    return
-                except:
-                    if attempt == max_attempts - 1:
-                        raise RuntimeError("GROBID server failed to start within timeout period")
-                    continue
-
-        except Exception as e:
-            logger.error("Failed to start GROBID server", source="GrobidService", error=e)
-            raise
-
-    def stop_server(self) -> None:
-        """
-        Stop the GROBID server process.
-        """
-        try:
-            if self.grobid_process:
-                self.grobid_process.terminate()
-                self.grobid_process.wait()
-                self.grobid_process = None
-                logger.info("GROBID server stopped", source="GrobidService")
-            else:
-                logger.warning("No GROBID process to stop", source="GrobidService")
-        except Exception as e:
-            logger.error("Failed to stop GROBID server", source="GrobidService", error=e)
-            raise
+    # === DOCUMENT PROCESSING ===
 
     def check_server_status(self) -> bool:
         """
@@ -235,7 +159,11 @@ class GrobidService:
             If core processing steps fail.
         """
         file_path = Path(file_path)
-        original_filename = original_filename or file_path.name
+        
+        # Resolve path to local filesystem for processing
+        local_file_path = Path(path_resolver.to_local_path(file_path))
+        
+        original_filename = original_filename or local_file_path.name
         output_stem = filename_stem or Path(original_filename).stem
 
         logger.info(f"Starting document processing workflow for: {original_filename}", source="GrobidService")
@@ -253,7 +181,7 @@ class GrobidService:
 
         try:
             # Step 1: Validate and convert to PDF
-            pdf_path = self._validate_and_convert_document(file_path, output_stem)
+            pdf_path = self._validate_and_convert_document(local_file_path, output_stem)
             result['pdf_file'] = pdf_path.name  # Use the properly named PDF
 
             # Step 2: Extract TEI XML with GROBID
@@ -276,12 +204,16 @@ class GrobidService:
             # Step 5: Save locally (always succeeds)
             local_tei_path = self._save_tei_locally(cleaned_tei, output_stem)
             result['local_tei_path'] = str(local_tei_path)
+            
+            # Generate storage paths for API responses
+            result['storage_tei_path'] = path_resolver.to_storage_path(local_tei_path, "extracted_xml")
+            result['storage_pdf_path'] = path_resolver.to_storage_path(pdf_path, "raw_documents")
 
             logger.info(f"Core processing completed for: {original_filename}", source="GrobidService")
 
             # Step 6: Attempt storage (non-blocking)
             try:
-                self._store_to_appwrite(pdf_path, local_tei_path, metadata)
+                self._store_files_and_metadata(pdf_path, local_tei_path, metadata)
                 result['storage_success'] = True
                 logger.info(f"Storage completed for: {original_filename}", source="GrobidService")
             except Exception as storage_error:
@@ -617,9 +549,9 @@ class GrobidService:
             logger.error(f"Failed to save TEI locally", source="GrobidService", error=e)
             raise
 
-    def _store_to_appwrite(self, pdf_path: Path, tei_path: Path, metadata: Dict[str, Any]):
+    def _store_files_and_metadata(self, pdf_path: Path, tei_path: Path, metadata: Dict[str, Any]):
         """
-        Stores processed files and metadata to Appwrite using proper URL retrieval.
+        Stores processed files and metadata using BucketClient and DatabaseManager.
 
         Parameters
         ----------
@@ -630,42 +562,38 @@ class GrobidService:
         metadata : Dict[str, Any]
             Document metadata to store.
         """
-        logger.info("Storing files and metadata to Appwrite...", source="GrobidService")
+        logger.info("Storing files and metadata...", source="GrobidService")
 
         # Upload original PDF
-        pdf_upload = self.bucket_manager.upload_file(
-            bucket_id="raw_documents_bucket",
-            file_path=str(pdf_path)
-        )
-
-        # Get PDF file URL using the get_file_url method
-        pdf_url = self.bucket_manager.get_file_url(
-            bucket_id="raw_documents_bucket",
-            file_name=pdf_path.name
+        with open(pdf_path, 'rb') as f:
+            pdf_content = f.read()
+        pdf_upload_result = self.bucket_client.upload_file(
+            file_path=get_storage_path("raw_documents", pdf_path.name),
+            content=pdf_content,
+            metadata={**metadata, "file_type": "pdf", "source": "grobid_processing"}
         )
 
         # Upload cleaned TEI XML
-        tei_upload = self.bucket_manager.upload_file(
-            bucket_id="processed_xml_bucket",
-            file_path=str(tei_path)
+        with open(tei_path, 'rb') as f:
+            tei_content = f.read()
+        tei_upload_result = self.bucket_client.upload_file(
+            file_path=get_storage_path("extracted_xml", tei_path.name),
+            content=tei_content,
+            metadata={**metadata, "file_type": "tei_xml", "source": "grobid_processing"}
         )
 
-        # Get TEI file URL using the get_file_url method
-        tei_url = self.bucket_manager.get_file_url(
-            bucket_id="processed_xml_bucket",
-            file_name=tei_path.name
-        )
-
-        # Update metadata with the proper file URLs
+        # Update metadata with file paths
         metadata.update({
-            "file_url": tei_url,  # TEI XML file URL
-            "pdf_url": pdf_url   # Original PDF file URL
+            "file_url": get_storage_path("extracted_xml", tei_path.name),  # TEI XML file path
+            "pdf_url": get_storage_path("raw_documents", pdf_path.name),   # Original PDF file path
+            "pdf_upload_success": pdf_upload_result.get("success", False),
+            "tei_upload_success": tei_upload_result.get("success", False)
         })
 
         # Save metadata to database
         self.db_manager.create_record(
-            collection_id="file_metadata",
-            data=metadata
+            "file_metadata",
+            metadata
         )
 
-        logger.info("Successfully stored files and metadata to Appwrite", source="GrobidService")
+        logger.info("Successfully stored files and metadata", source="GrobidService")

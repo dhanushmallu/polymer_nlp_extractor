@@ -41,6 +41,8 @@ dependencies = [
     "python-multipart>=0.0.6",
     "cryptography>=39.0.0",
     "appwrite>=4.0.0",
+    "boto3>=1.26.0",
+    "botocore>=1.29.0",
     "tqdm>=4.65.0",
     "python-dotenv>=1.0.0",
     "fuzzywuzzy>=0.18.0",
@@ -72,3 +74,8 @@ where = ["polymer_extractor"]
 
 [project.scripts]
 pnlp = "polymer_extractor.cli.cli:cli"
+
+[tool.pytest.ini_options]
+filterwarnings = [
+    "ignore:Relying on Driver's destructor to close the session is deprecated:DeprecationWarning:neo4j._sync.driver"
+]

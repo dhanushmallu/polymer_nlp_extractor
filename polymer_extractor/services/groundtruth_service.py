@@ -7,7 +7,7 @@ Provides comprehensive ground truth data processing capabilities:
 - Upload and validation of CSV/JSON ground truth files
 - Intelligent column alignment and cleaning for CSV files
 - DataFrame standardization and storage
-- Integration with Appwrite for persistent storage
+- Integration with BucketClient for persistent storage
 - Model evaluation metrics tracking
 
 Key Features:
@@ -21,7 +21,7 @@ Key Features:
 Dependencies:
 - pandas (for DataFrame operations)
 - numpy (for numerical operations)
-- Appwrite Python SDK
+- BucketClient for storage operations
 """
 
 import json
@@ -32,10 +32,11 @@ from typing import Union, Dict, Any, List
 
 import pandas as pd
 
-from polymer_extractor.storage.bucket_manager import BucketManager
+from polymer_extractor.storage.bucket_client import BucketClient
 from polymer_extractor.storage.database_manager import DatabaseManager
 from polymer_extractor.utils.logging import Logger
-from polymer_extractor.utils.paths import TESTING_DATA_DIR
+from polymer_extractor.utils.paths import TESTING_DATA_DIR, get_storage_path, get_local_path
+from polymer_extractor.utils.paths import path_resolver
 logger = Logger()
 
 
@@ -66,7 +67,7 @@ class GroundTruthService:
         Initialize Ground Truth service.
         """
         self.db_manager = DatabaseManager()
-        self.bucket_manager = BucketManager()
+        self.bucket_client = BucketClient()
 
         # Ensure ground truth directory exists
         self.ground_truth_dir = Path(TESTING_DATA_DIR)
@@ -111,7 +112,11 @@ class GroundTruthService:
             Processing results including paths, metadata, and storage status.
         """
         file_path = Path(file_path)
-        original_filename = original_filename or file_path.name
+        
+        # Resolve path to local filesystem for processing
+        local_file_path = Path(path_resolver.to_local_path(file_path))
+        
+        original_filename = original_filename or local_file_path.name
         output_stem = filename_stem or Path(original_filename).stem
 
         logger.info(f"Starting ground truth processing for: {original_filename}",
@@ -132,11 +137,11 @@ class GroundTruthService:
 
         try:
             # Step 1: Validate file format
-            file_type = self._validate_file_format(file_path)
+            file_type = self._validate_file_format(local_file_path)
             result['file_type'] = file_type
 
             # Step 2: Load and parse data
-            raw_data = self._load_data(file_path, file_type)
+            raw_data = self._load_data(local_file_path, file_type)
             result['raw_data'] = len(raw_data) if isinstance(raw_data, (list, pd.DataFrame)) else None
 
             # Step 3: Process based on file type
@@ -162,13 +167,16 @@ class GroundTruthService:
             # Step 6: Save locally
             local_path = self._save_locally(standardized_df, output_stem)
             result['local_path'] = str(local_path)
+            
+            # Generate storage path for API responses
+            result['storage_path'] = path_resolver.to_storage_path(local_path, "datasets")
 
             logger.info(f"Core processing completed for: {original_filename}",
                         source="GroundTruthService")
 
             # Step 7: Attempt cloud storage (non-blocking)
             try:
-                self._store_to_appwrite(local_path, standardized_df, metadata, dataset_name)
+                self._store_data(local_path, standardized_df, metadata, dataset_name)
                 result['storage_success'] = True
                 logger.info(f"Storage completed for: {original_filename}",
                             source="GroundTruthService")
@@ -851,10 +859,10 @@ class GroundTruthService:
                          source="GroundTruthService", error=e)
             raise
 
-    def _store_to_appwrite(self, local_path: Path, processed_df: pd.DataFrame, metadata: Dict[str, Any],
-                           dataset_name: str):
+    def _store_data(self, local_path: Path, processed_df: pd.DataFrame, metadata: Dict[str, Any],
+                    dataset_name: str):
         """
-        Store processed ground truth data to Appwrite.
+        Store processed ground truth data using BucketClient and DatabaseManager.
 
         Parameters
         ----------
@@ -867,35 +875,32 @@ class GroundTruthService:
         dataset_name : str
             Name of the dataset.
         """
-        logger.info("Storing ground truth data to Appwrite...", source="GroundTruthService")
+        logger.info("Storing ground truth data...", source="GroundTruthService")
 
-        # Upload CSV file to datasets bucket
-        csv_upload = self.bucket_manager.upload_file(
-            bucket_id="datasets_bucket",
-            file_path=str(local_path)
-        )
-
-        # Get file URL
-        file_url = self.bucket_manager.get_file_url(
-            bucket_id="datasets_bucket",
-            file_name=local_path.name
+        # Upload CSV file to datasets storage
+        with open(local_path, 'rb') as f:
+            content = f.read()
+        upload_result = self.bucket_client.upload_file(
+            file_path=get_storage_path("exports", local_path.name),
+            content=content,
+            metadata={**metadata, "source": "groundtruth", "dataset_name": dataset_name}
         )
 
         # Update metadata with file information
         metadata.update({
-            "file_url": file_url,
-            "appwrite_file_id": csv_upload['$id'],
+            "file_path": get_storage_path("exports", local_path.name),
+            "upload_success": upload_result.get("success", False),
             "local_path": str(local_path),
             "file_size": local_path.stat().st_size
         })
 
         # Store metadata in database
         self.db_manager.create_record(
-            collection_id="datasets_metadata",
-            data=metadata
+            "datasets_metadata",
+            metadata
         )
 
-        logger.info("Successfully stored ground truth data to Appwrite", source="GroundTruthService")
+        logger.info("Successfully stored ground truth data", source="GroundTruthService")
 
     # === RETRIEVAL METHODS ===
 
@@ -944,11 +949,21 @@ class GroundTruthService:
                             source="GroundTruthService")
                 return df
 
-            # Download from Appwrite if local file not available
-            file_id = metadata['appwrite_file_id']
+            # Download from storage if local file not available
+            file_path = metadata.get('file_path', f"datasets/{dataset_id}.csv")
             temp_path = self.ground_truth_dir / f"temp_{dataset_id}.csv"
 
-            self.bucket_manager.download_file("datasets_bucket", file_id, str(temp_path))
+            file_path = metadata.get('file_path', f"datasets/{dataset_id}.csv")
+            temp_path = self.ground_truth_dir / f"temp_{dataset_id}.csv"
+
+            content = self.bucket_client.download_file(file_path=file_path)
+            with open(temp_path, 'wb') as f:
+                f.write(content)
+            
+            # Check if download was successful (file exists and has content)
+            if not temp_path.exists() or temp_path.stat().st_size == 0:
+                raise Exception(f"Failed to download dataset: file is empty or doesn't exist")
+                
             df = pd.read_csv(temp_path)
 
             # Clean up temp file
