@@ -1,0 +1,229 @@
+{
+    "info": {
+        "name": "Polymer NLP Extractor - MODELS",
+        "description": "GitHub-based models synchronization for models and tokenizers with version validation and atomic download operations. Handles downloading, validating, and managing ML models required for NLP processing.",
+        "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+        "_postman_id": "polymer-models-api-2024",
+        "version": {
+            "major": 2,
+            "minor": 0,
+            "patch": 0
+        }
+    },
+    "variable": [
+        {
+            "key": "pnlp",
+            "value": "http://localhost:8000",
+            "description": "Base URL for Polymer NLP Extractor API"
+        },
+        {
+            "key": "default_user_id",
+            "value": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+            "description": "Default user UUID for testing (UUID format required)"
+        },
+        {
+            "key": "default_session_id",
+            "value": "550e8400-e29b-41d4-a716-446655440000",
+            "description": "Default session UUID for testing (UUID format required)"
+        }
+    ],
+    "item": [
+        {
+            "name": "Models Status",
+            "request": {
+                "method": "GET",
+                "header": [
+                    {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                    }
+                ],
+                "url": {
+                    "raw": "{{pnlp}}/api/models/status",
+                    "host": ["{{pnlp}}"],
+                    "path": ["api", "models", "status"]
+                },
+                "description": "Get current status of models directory and GitHub sync configuration. Provides comprehensive status information about the current models directory, GitHub configuration, sync readiness, and model counts. Essential for monitoring model availability and troubleshooting sync issues."
+            },
+            "response": []
+        },
+        {
+            "name": "Validate Models",
+            "request": {
+                "method": "GET",
+                "header": [
+                    {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                    }
+                ],
+                "url": {
+                    "raw": "{{pnlp}}/api/models/validate",
+                    "host": ["{{pnlp}}"],
+                    "path": ["api", "models", "validate"]
+                },
+                "description": "Validate version compatibility between existing models and tokenizers. Checks all models and tokenizers in the models directory for version compatibility, structural completeness, and provides detailed analysis of each model-tokenizer pair with actionable recommendations."
+            },
+            "response": []
+        },
+        {
+            "name": "Sync Models (Safe)",
+            "request": {
+                "method": "POST",
+                "header": [
+                    {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                    }
+                ],
+                "body": {
+                    "mode": "raw",
+                    "raw": "{\\n    \\\"force_redownload\\\": false\\n}"
+                },
+                "url": {
+                    "raw": "{{pnlp}}/api/models/sync",
+                    "host": ["{{pnlp}}"],
+                    "path": ["api", "models", "sync"]
+                },
+                "description": "Safe synchronization of models and tokenizers from GitHub repositories. Downloads latest models and tokenizers from configured GitHub repositories, validates version compatibility, and updates local models directory atomically. Only downloads if not already present - safe for repeated use."
+            },
+            "response": []
+        },
+        {
+            "name": "Sync Models (Force Redownload)",
+            "request": {
+                "method": "POST",
+                "header": [
+                    {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                    }
+                ],
+                "body": {
+                    "mode": "raw",
+                    "raw": "{\\n    \\\"force_redownload\\\": true\\n}"
+                },
+                "url": {
+                    "raw": "{{pnlp}}/api/models/sync",
+                    "host": ["{{pnlp}}"],
+                    "path": ["api", "models", "sync"]
+                },
+                "description": "Force redownload of all models and tokenizers from GitHub repositories. Downloads and replaces existing models even if they already exist locally. Use for recovering from corrupted models, updating to latest versions, or when validation fails. Atomic operation with rollback on failure."
+            },
+            "response": []
+        },
+        {
+            "name": "Bulk Operations",
+            "item": [
+                {
+                    "name": "Complete Models Setup",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\\n    \\\"force_redownload\\\": false\\n}"
+                        },
+                        "url": {
+                            "raw": "{{pnlp}}/api/models/sync",
+                            "host": ["{{pnlp}}"],
+                            "path": ["api", "models", "sync"]
+                        },
+                        "description": "Complete models setup sequence: 1) Check current status 2) Sync models (safe) 3) Validate after sync 4) Verify final status. Recommended workflow for initial model setup or regular maintenance. Use this for most model management tasks."
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Models Recovery Workflow",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\\n    \\\"force_redownload\\\": true\\n}"
+                        },
+                        "url": {
+                            "raw": "{{pnlp}}/api/models/sync",
+                            "host": ["{{pnlp}}"],
+                            "path": ["api", "models", "sync"]
+                        },
+                        "description": "Models recovery workflow for corrupted or failed models: 1) Check current status 2) Validate existing models 3) Force redownload all models 4) Validate after recovery 5) Verify final status. Use when models are corrupted or validation consistently fails."
+                    },
+                    "response": []
+                }
+            ]
+        }
+    ],
+    "auth": {
+        "type": "noauth"
+    },
+    "event": [
+        {
+            "listen": "prerequest",
+            "script": {
+                "type": "text/javascript",
+                "exec": [
+                    "// Log request details for debugging",
+                    "console.log(\"Making models API request to:\", pm.request.url.toString());",
+                    "console.log(\"Request method:\", pm.request.method);",
+                    "if (pm.request.body && pm.request.body.raw) {",
+                    "    console.log(\"Request body:\", pm.request.body.raw);",
+                    "}"
+                ]
+            }
+        },
+        {
+            "listen": "test",
+            "script": {
+                "type": "text/javascript",
+                "exec": [
+                    "// Basic response validation",
+                    "pm.test(\"Response status is successful\", function () {",
+                    "    pm.expect(pm.response.code).to.be.oneOf([200, 201, 202]);",
+                    "});",
+                    "",
+                    "// Check response structure",
+                    "pm.test(\"Response has proper structure\", function () {",
+                    "    const response = pm.response.json();",
+                    "    pm.expect(response).to.have.property(\"success\");",
+                    "});",
+                    "",
+                    "// Log operation results",
+                    "const response = pm.response.json();",
+                    "if (response.success) {",
+                    "    console.log(\"Models operation completed successfully\");",
+                    "    if (response.models_synced !== undefined) {",
+                    "        console.log(\"Models synced:\", response.models_synced);",
+                    "    }",
+                    "    if (response.tokenizers_synced !== undefined) {",
+                    "        console.log(\"Tokenizers synced:\", response.tokenizers_synced);",
+                    "    }",
+                    "    if (response.version_validated !== undefined) {",
+                    "        console.log(\"Version validated:\", response.version_validated);",
+                    "    }",
+                    "} else {",
+                    "    console.log(\"Models operation failed\");",
+                    "    if (response.errors && response.errors.length > 0) {",
+                    "        console.log(\"Errors:\", response.errors);",
+                    "    }",
+                    "}",
+                    "",
+                    "// Response time check (models operations can take longer)",
+                    "pm.test(\"Response time is acceptable\", function () {",
+                    "    pm.expect(pm.response.responseTime).to.be.below(120000); // 2 minutes max for model operations",
+                    "});"
+                ]
+            }
+        }
+    ]
+}

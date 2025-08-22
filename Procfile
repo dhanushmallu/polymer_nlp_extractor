@@ -1,1 +1,1 @@
-web: uvicorn polymer_nlp_extractor.main:app --host=0.0.0.0 --port=${PORT:-8000}
+web: uvicorn polymer_nlp_extractor.main:app --host=${API_HOST:-0.0.0.0} --port=${API_PORT:-${PORT:-8000}}

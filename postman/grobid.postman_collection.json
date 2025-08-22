@@ -1,0 +1,315 @@
+{
+    "info": {
+        "name": "Polymer NLP Extractor - GROBID",
+        "description": "Session-aware GROBID document processing with multi-file support, comprehensive validation, and unified response formatting. All endpoints require default_session_id and default_user_id for proper isolation and security.",
+        "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+        "_postman_id": "polymer-grobid-api-2024",
+        "version": {
+            "major": 1,
+            "minor": 0,
+            "patch": 0
+        }
+    },
+    "variable": [
+        {
+            "key": "pnlp",
+            "value": "http://localhost:8000",
+            "description": "Base URL for Polymer NLP Extractor API"
+        },
+        {
+            "key": "default_session_id",
+            "value": "550e8400-e29b-41d4-a716-446655440000",
+            "description": "Default session UUID for testing (UUID format required)"
+        },
+        {
+            "key": "default_user_id", 
+            "value": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+            "description": "Default user UUID for testing (UUID format required)"
+        }
+    ],
+    "item": [
+        {
+            "name": "Server Status",
+            "request": {
+                "method": "GET",
+                "header": [
+                    {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                    }
+                ],
+                "url": {
+                    "raw": "{{pnlp}}/api/grobid/server/status",
+                    "host": ["{{pnlp}}"],
+                    "path": ["api", "grobid", "server", "status"]
+                },
+                "description": "Check GROBID server availability and health status. This endpoint verifies if the GROBID processing server is running and accessible. Use this before attempting document processing to ensure system readiness."
+            },
+            "response": []
+        },
+        {
+            "name": "Health Check", 
+            "request": {
+                "method": "GET",
+                "header": [
+                    {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                    }
+                ],
+                "url": {
+                    "raw": "{{pnlp}}/api/grobid/health",
+                    "host": ["{{pnlp}}"],
+                    "path": ["api", "grobid", "health"]
+                },
+                "description": "Comprehensive health check for GROBID service dependencies including GROBID server, storage backends, database connectivity, and session management. Provides detailed status of all system components required for document processing."
+            },
+            "response": []
+        },
+        {
+            "name": "Process Single Document",
+            "request": {
+                "method": "POST",
+                "header": [],
+                "body": {
+                    "mode": "formdata",
+                    "formdata": [
+                        {
+                            "key": "session_id",
+                            "value": "{{default_session_id}}",
+                            "type": "text",
+                            "description": "Session identifier for processing context and resource isolation"
+                        },
+                        {
+                            "key": "user_id", 
+                            "value": "{{default_user_id}}",
+                            "type": "text",
+                            "description": "User identifier for session validation and storage isolation"
+                        },
+                        {
+                            "key": "file",
+                            "type": "file",
+                            "src": [],
+                            "description": "Document file to process (PDF, XML, HTML formats supported)"
+                        },
+                        {
+                            "key": "filename_stem",
+                            "value": "",
+                            "type": "text",
+                            "description": "Optional custom filename stem for output files (leave empty for auto-generation)"
+                        }
+                    ]
+                },
+                "url": {
+                    "raw": "{{pnlp}}/api/grobid/process/upload",
+                    "host": ["{{pnlp}}"],
+                    "path": ["api", "grobid", "process", "upload"]
+                },
+                "description": "Process a single uploaded document with session context. Supports PDF, XML, and HTML formats with automatic format detection and conversion. Returns processed TEI XML with extracted metadata including title, authors, abstract, and bibliography. Files are automatically stored with session isolation for security."
+            },
+            "response": []
+        },
+        {
+            "name": "Process Multiple Documents",
+            "request": {
+                "method": "POST",
+                "header": [],
+                "body": {
+                    "mode": "formdata",
+                    "formdata": [
+                        {
+                            "key": "session_id",
+                            "value": "{{default_session_id}}",
+                            "type": "text",
+                            "description": "Session identifier for processing context"
+                        },
+                        {
+                            "key": "user_id",
+                            "value": "{{default_user_id}}",
+                            "type": "text", 
+                            "description": "User identifier for session validation"
+                        },
+                        {
+                            "key": "files",
+                            "type": "file",
+                            "src": [],
+                            "description": "Multiple document files to process (select multiple files)"
+                        },
+                        {
+                            "key": "parallel_processing",
+                            "value": "true",
+                            "type": "text",
+                            "description": "Enable parallel processing for faster batch operations"
+                        }
+                    ]
+                },
+                "url": {
+                    "raw": "{{pnlp}}/api/grobid/process/multiple", 
+                    "host": ["{{pnlp}}"],
+                    "path": ["api", "grobid", "process", "multiple"]
+                },
+                "description": "Process multiple uploaded documents with session context and optional parallel execution. Supports batch processing with intelligent error handling - individual file failures don't stop the entire batch. Returns detailed results for each file including success/failure status and error details."
+            },
+            "response": []
+        },
+        {
+            "name": "Process Zip Archive",
+            "request": {
+                "method": "POST", 
+                "header": [],
+                "body": {
+                    "mode": "formdata",
+                    "formdata": [
+                        {
+                            "key": "session_id",
+                            "value": "{{default_session_id}}",
+                            "type": "text",
+                            "description": "Session identifier for processing context"
+                        },
+                        {
+                            "key": "user_id",
+                            "value": "{{default_user_id}}",
+                            "type": "text",
+                            "description": "User identifier for session validation"
+                        },
+                        {
+                            "key": "zip_file",
+                            "type": "file",
+                            "src": [],
+                            "description": "Zip file containing documents to process"
+                        },
+                        {
+                            "key": "extract_subfolders",
+                            "value": "true",
+                            "type": "text",
+                            "description": "Whether to extract and process files from subfolders within the zip"
+                        }
+                    ]
+                },
+                "url": {
+                    "raw": "{{pnlp}}/api/grobid/process/zip",
+                    "host": ["{{pnlp}}"],
+                    "path": ["api", "grobid", "process", "zip"]
+                },
+                "description": "Process a zip file containing multiple documents with automatic extraction and validation. Validates zip integrity, extracts supported file formats, and processes each document individually. Includes file filtering and corruption detection to ensure only valid documents are processed."
+            },
+            "response": []
+        },
+        {
+            "name": "Process Local File (Legacy)",
+            "request": {
+                "method": "POST",
+                "header": [
+                    {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                    }
+                ],
+                "body": {
+                    "mode": "raw",
+                    "raw": "{\n    \"session_id\": \"{{default_session_id}}\",\n    \"user_id\": \"{{default_user_id}}\",\n    \"file_path\": \"workspace/testing_research_papers/sample_paper.pdf\",\n    \"filename_stem\": \"custom_output_name\"\n}"
+                },
+                "url": {
+                    "raw": "{{pnlp}}/api/grobid/process/file",
+                    "host": ["{{pnlp}}"],
+                    "path": ["api", "grobid", "process", "file"]
+                },
+                "description": "Legacy endpoint for processing local files by path. Processes a file that already exists in the workspace directory structure. Useful for testing with known files or batch processing of pre-uploaded documents. Requires valid file path relative to workspace root."
+            },
+            "response": []
+        },
+        {
+            "name": "Download TEI XML",
+            "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                    "raw": "{{pnlp}}/api/grobid/download/tei/sample_document.tei.xml?session_id={{default_session_id}}&user_id={{default_user_id}}",
+                    "host": ["{{pnlp}}"],
+                    "path": ["api", "grobid", "download", "tei", "sample_document.tei.xml"],
+                    "query": [
+                        {
+                            "key": "session_id",
+                            "value": "{{default_session_id}}",
+                            "description": "Session identifier for file access validation"
+                        },
+                        {
+                            "key": "user_id",
+                            "value": "{{default_user_id}}",
+                            "description": "User identifier for file access validation"
+                        }
+                    ]
+                },
+                "description": "Download a processed TEI XML file by filename with session validation. Returns the raw TEI XML file with all extracted content including structured metadata, bibliography, and full document text. Files are session-scoped for security - users can only access their own processed files."
+            },
+            "response": []
+        },
+        {
+            "name": "List TEI Files",
+            "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                    "raw": "{{pnlp}}/api/grobid/list/tei?session_id={{default_session_id}}&user_id={{default_user_id}}",
+                    "host": ["{{pnlp}}"],
+                    "path": ["api", "grobid", "list", "tei"],
+                    "query": [
+                        {
+                            "key": "session_id",
+                            "value": "{{default_session_id}}",
+                            "description": "Session identifier for file listing"
+                        },
+                        {
+                            "key": "user_id",
+                            "value": "{{default_user_id}}",
+                            "description": "User identifier for file listing"
+                        }
+                    ]
+                },
+                "description": "List all processed TEI XML files for the current session. Returns a comprehensive list of all documents processed in the session with file details, processing timestamps, and download links. Useful for reviewing processing history and accessing previous results."
+            },
+            "response": []
+        }
+    ],
+    "auth": {
+        "type": "noauth"
+    },
+    "event": [
+        {
+            "listen": "prerequest",
+            "script": {
+                "type": "text/javascript",
+                "exec": [
+                    "// Use default UUIDs for consistent testing",
+                    "console.log('Using default_session_id:', pm.collectionVariables.get('default_session_id'));",
+                    "console.log('Using default_user_id:', pm.collectionVariables.get('default_user_id'));"
+                ]
+            }
+        },
+        {
+            "listen": "test",
+            "script": {
+                "type": "text/javascript",
+                "exec": [
+                    "// Basic response validation",
+                    "pm.test('Response status is successful', function () {",
+                    "    pm.expect(pm.response.code).to.be.oneOf([200, 201, 202]);",
+                    "});",
+                    "",
+                    "// Check response structure for API responses",
+                    "if (pm.response.headers.get('Content-Type') && pm.response.headers.get('Content-Type').includes('application/json')) {",
+                    "    pm.test('Response has proper structure', function () {",
+                    "        const response = pm.response.json();",
+                    "        pm.expect(response).to.have.property('status');",
+                    "    });",
+                    "}",
+                    "",
+                    "// Log response time for performance monitoring",
+                    "pm.test('Response time is acceptable', function () {",
+                    "    pm.expect(pm.response.responseTime).to.be.below(30000); // 30 seconds max",
+                    "});"
+                ]
+            }
+        }
+    ]
+}
