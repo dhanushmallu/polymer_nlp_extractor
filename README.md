@@ -425,7 +425,7 @@ PGADMIN_DEFAULT_PASSWORD=admin123
 >**NOTE:** GROBID, PosgreSQL and NEO4j must be running for the api to start, if you try running without them, the app will crash.
 
 ```
-source .venv/bin/activate && cd /home/kibocha/workspace/polymer_nlp_extractor && uvicorn polymer_extractor.main:app --host 127.0.0.1 --port 8000
+source .venv/bin/activate && cd /home/{user}/workspace/polymer_nlp_extractor && uvicorn polymer_extractor.main:app --host 127.0.0.1 --port 8000
 ```
 
 **Separate Services:**
