@@ -2,15 +2,15 @@
 
 A comprehensive Natural Language Processing pipeline for extracting polymer-related entities from scientific literature using ensemble machine learning models and knowledge graphs.
 
-## 🚨 **Platform Support**
+## Platform Support
 
-**WINDOWS IS NOT SUPPORTED** - This project is designed exclusively for Unix-based systems:
+**Windows is not supported.** This project is designed exclusively for Unix-based systems:
 
-- ✅ **Linux** (Ubuntu 20.04+, Debian 11+)
-- ✅ **macOS Intel** (x86_64)
-- ✅ **macOS Apple Silicon** (M1/M2/M3)
+- Linux (Ubuntu 20.04+, Debian 11+)
+- macOS Intel (x86_64)
+- macOS Apple Silicon (M1/M2/M3)
 
-**Windows users must use WSL2 (Windows Subsystem for Linux) with Ubuntu.**
+Windows users must use WSL2 (Windows Subsystem for Linux) with Ubuntu.
 
 ## Overview
 
@@ -25,15 +25,15 @@ This project extracts polymer entities (POLYMER, PROPERTY, VALUE, UNIT, SYMBOL) 
 
 ## Prerequisites
 
-- **Python 3.8+** 
-- **Docker** and **Docker Compose** (required for services)
-- **Git** (for repository management)
-- **Node.js** and **npm** (optional - required for Appwrite storage backend)
-- **Internet connection** for downloads and package installation
+- Python 3.8+
+- Docker and Docker Compose (required for services)
+- Git (for repository management)
+- Node.js and npm (optional - required for Appwrite storage backend)
+- Internet connection for downloads and package installation
 
-## 🚀 **Quick Start**
+## Quick Start
 
-### **1. Clone and Setup**
+### 1. Clone and Setup
 
 **Linux:**
 ```bash
@@ -65,29 +65,50 @@ arch -arm64 pip3 install -e .
 arch -arm64 pip3 install -r requirements.txt
 ```
 
-### **2. Environment Configuration**
+### 2. Environment Configuration
 
 ```bash
 cp .env.example .env
 nano .env
 ```
 
-### **3. Start Services**
+### 3. Start Services
 
 ```bash
 ./server.sh services
 ```
 
-### **4. Verify Installation**
+### 4. Verify Installation
 
 ```bash
 ./server.sh status
 curl http://127.0.0.1:8000/
 ```
 
-🎉 **You're ready!** API available at `http://127.0.0.1:8000`
+The API will be available at `http://127.0.0.1:8000`
 
-## 📁 **Storage Configuration**
+## Important Notice: Dataset Availability
+
+**CRITICAL**: The original real-world dataset containing approximately 13 research papers has been corrupted and discarded upon quality review. This dataset is no longer available and cannot be recovered.
+
+**Impact for Developers**:
+- No pre-existing training or validation datasets are available
+- Developers must extract and prepare their own datasets
+- Current testing data may be incomplete or inconsistent
+
+**Recommended Data Preparation**:
+For accurate entity extraction, developers should:
+1. Process documents paragraph-by-paragraph (not full files)
+2. Use AI-assisted extraction with the comprehensive prompt provided in [Document 9: Model Optimization Layer](docs/9_model_optimization_layer.md)
+3. Validate extractions against domain knowledge
+4. Follow standardized labeling formats outlined in the documentation
+5. Implement quality control measures to prevent data corruption
+
+See the Model Optimization Layer documentation for detailed data preparation guidelines and extraction best practices.
+
+## Storage Configuration
+
+## Storage Configuration
 
 This project supports flexible storage backends with multi-backend routing:
 
@@ -95,7 +116,7 @@ This project supports flexible storage backends with multi-backend routing:
 - **Appwrite Storage**: Cloud storage with CDN and backup
 - **S3 Storage**: AWS S3 or S3-compatible storage
 
-### **Multi-Backend Strategies**
+### Multi-Backend Strategies
 
 Configure multiple backends simultaneously with different routing strategies:
 
@@ -111,7 +132,7 @@ STORAGE_STRATEGY=sync                       # sync | replica | failover | primar
 - **failover**: Use backup if primary fails
 - **sync**: Read/write from all backends simultaneously
 
-### **Storage Backend Setup**
+### Storage Backend Setup
 
 **Local Storage (Default):**
 ```bash
@@ -197,10 +218,10 @@ STORAGE_PATH=./workspace/public
    ```bash
    # In Appwrite Console → Settings → API Keys → Create API Key
    # Required scopes:
-   # ✅ files.read
-   # ✅ files.write
-   # ✅ buckets.read
-   # ✅ buckets.write
+   # files.read
+   # files.write
+   # buckets.read
+   # buckets.write
    ```
 
 4. **Configure in .env**:
@@ -226,9 +247,11 @@ The storage client automatically creates buckets as needed:
 - Appwrite: Creates buckets with default permissions
 - Local: Creates directories as filesystem "buckets"
 
-## 🐳 **Docker Setup**
+## Docker Setup
 
-### **Installation**
+## Docker Setup
+
+### Installation
 
 **Linux:**
 ```bash
@@ -248,7 +271,7 @@ brew install --cask docker
 arch -arm64 brew install --cask docker
 ```
 
-### **Permission Setup (Linux Only)**
+### Permission Setup (Linux Only)
 
 ```bash
 sudo usermod -aG docker $USER
@@ -262,7 +285,7 @@ docker ps
 # Script detects permission issues and provides guidance
 ```
 
-### **Service Management**
+### Service Management
 
 ```bash
 ./server.sh services      # Start services
@@ -275,9 +298,11 @@ docker ps
 ./server.sh logs          # View logs
 ```
 
-## 🛠 **Manual Installation (Advanced)**
+## Manual Installation (Advanced)
 
-### **GROBID Installation**
+## Manual Installation (Advanced)
+
+### GROBID Installation
 
 **Option A: Docker GROBID (Recommended)**
 ```bash
@@ -322,7 +347,7 @@ arch -arm64 ./gradlew clean install
 arch -arm64 ./gradlew run
 ```
 
-### **PostgreSQL Manual Setup**
+### PostgreSQL Manual Setup
 
 **Linux:**
 ```bash
@@ -332,7 +357,7 @@ sudo systemctl start postgresql
 sudo systemctl enable postgresql
 sudo -u postgres psql
 CREATE DATABASE polymer_extractor;
-CREATE USER pnlp_db_user WITH PASSWORD 'your_password';
+CREATE USER pnlp_db_user WITH PASSWORD 'secure_password';
 GRANT ALL PRIVILEGES ON DATABASE polymer_extractor TO pnlp_db_user;
 ALTER USER pnlp_db_user CREATEDB;
 \q
@@ -354,7 +379,7 @@ createdb polymer_extractor
 createuser -s pnlp_db_user
 ```
 
-### **Neo4j Manual Setup**
+### Neo4j Manual Setup
 
 **Linux:**
 ```bash
@@ -364,31 +389,33 @@ sudo apt update
 sudo apt install neo4j
 sudo systemctl start neo4j
 sudo systemctl enable neo4j
-neo4j-admin set-initial-password your_password
+neo4j-admin set-initial-password secure_password
 ```
 
 **macOS Intel:**
 ```bash
 brew install neo4j
 brew services start neo4j
-neo4j-admin set-initial-password your_password
+neo4j-admin set-initial-password secure_password
 ```
 
 **macOS Apple Silicon:**
 ```bash
 arch -arm64 brew install neo4j
 arch -arm64 brew services start neo4j
-neo4j-admin set-initial-password your_password
+neo4j-admin set-initial-password secure_password
 ```
 
-## 🔧 **Environment Configuration**
+## Environment Configuration
+
+## Environment Configuration
 
 ```bash
 cp .env.example .env
 nano .env
 ```
 
-### **Key Variables**
+### Key Variables
 
 ```bash
 # API Server
@@ -402,54 +429,58 @@ STORAGE_PATH=./workspace/public
 # Database (Docker defaults)
 POSTGRES_DB=polymer_extractor
 POSTGRES_USER=pnlp_db_user
-POSTGRES_PASSWORD=9MFiCQtz2PYZdChRK7VAMWtTKGTQZFKqjFdU
+POSTGRES_PASSWORD=<generated_secure_password>
 
 # Neo4j (Docker defaults)
 NEO4J_USER=neo4j
-NEO4J_PASSWORD=37njY9TNEnmUxATqUGBvUZj9EqFDyxWvLspX
+NEO4J_PASSWORD=<generated_secure_password>
 
 # pgAdmin (optional)
 PGADMIN_DEFAULT_EMAIL=admin@example.com
-PGADMIN_DEFAULT_PASSWORD=admin123
+PGADMIN_DEFAULT_PASSWORD=<secure_admin_password>
 ```
 
-## 🚀 **Running the Application**
+## Running the Application
 
-### **Development Workflow**
+## Running the Application
 
-**Full Stack:**
+### Development Workflow
+
+**Option 1: Complete Automated Setup**
 ```bash
-./server.sh                 # Start everything
-```
-**Start API server separately for DEBUGGING**
->**NOTE:** GROBID, PosgreSQL and NEO4j must be running for the api to start, if you try running without them, the app will crash.
-
-```
-source .venv/bin/activate && cd /home/kibocha/workspace/polymer_nlp_extractor && uvicorn polymer_extractor.main:app --host 127.0.0.1 --port 8000
+./server.sh                 # Start everything (services + API)
 ```
 
-**Separate Services:**
+**Option 2: Services with Manual API Control**
 ```bash
 ./server.sh services        # Start services once
-./server.sh app             # Start/stop app as needed
+./server.sh app             # Start/stop API as needed for development
 ```
 
-**With pgAdmin:**
+**Option 3: Manual API Development**
+```bash
+./server.sh services        # Start services once
+# Then run API manually for debugging:
+source .venv/bin/activate && cd "$(pwd)" && uvicorn polymer_extractor.main:app --host 127.0.0.1 --port 8000
+```
+
+**Option 4: With pgAdmin Database Interface**
 ```bash
 ./server.sh pgadmin         # Start services + pgAdmin
-# pgAdmin: http://localhost:5050 (HTTP)
-# Login: admin@example.com / admin123
+# pgAdmin: http://localhost:5050
 ```
 
-### **Daily Pattern**
+Note: GROBID, PostgreSQL and Neo4j must be running for the API to start. If you try running the API without them, the application will crash.
+
+### Daily Development Pattern
 
 ```bash
 ./server.sh services        # Morning: start services
-./server.sh app             # Work: start/restart app
+./server.sh app             # Work: start/restart API as needed
 ./server.sh stop            # Evening: stop everything
 ```
 
-### **Service Commands**
+### Service Commands
 
 ```bash
 ./server.sh status          # Check status
@@ -460,19 +491,26 @@ source .venv/bin/activate && cd /home/kibocha/workspace/polymer_nlp_extractor &&
 ./server.sh purge           # Remove everything
 ```
 
-## 📚 **API Documentation**
+## API Documentation
+
+## API Documentation
 
 - **Swagger UI**: http://127.0.0.1:8000/docs
 - **ReDoc**: http://127.0.0.1:8000/redoc
+- **Project Documentation**: http://127.0.0.1:8000/api/docs-ui
 - **Service Status**: http://127.0.0.1:8000/api/servers/status
 
-### Postman collection
+### Postman Collections
 
-- Import `postman/setup.postman_collection.json` into Postman.
-- Set the environment/global variable `pnlp` to your API base (default: `http://localhost:8000`).
-- The collection includes: Setup Initialize, Clean Install, Reset, Health, and a legacy Analyze route.
+Import the following collections into Postman and set the environment variable `pnlp` to your API base (default: `http://localhost:8000`):
 
-### **Quick Test**
+- `postman/setup.postman_collection.json` - System setup and health checks
+- `postman/models.postman_collection.json` - Model synchronization
+- `postman/session.postman_collection.json` - User and session management
+- `postman/grobid.postman_collection.json` - Document processing
+- `postman/documentation.postman_collection.json` - Documentation API
+
+### Quick Test
 
 ```bash
 curl http://127.0.0.1:8000/
@@ -480,25 +518,25 @@ curl http://127.0.0.1:8000/api/servers/status
 curl -X POST http://127.0.0.1:8000/api/grobid/process -F "file=@your_document.pdf"
 ```
 
-## 🗄️ **Database Management**
+## Database Management
 
-### **pgAdmin Web Interface**
+## Database Management
+
+### pgAdmin Web Interface
 
 ```bash
 ./server.sh pgadmin
 # Access: http://localhost:5050
-# Login: admin@example.com / admin123
-# PostgreSQL Host: postgres (container name)
 ```
 
-### Add a server in pgAdmin (connection fields)
+### Add a Server in pgAdmin
 
 Use these values when registering a new server in pgAdmin (Servers → Register → Server):
 
-1) General tab
+**General tab:**
 - Name: polymer-postgres (any friendly name)
 
-2) Connection tab
+**Connection tab:**
 - Host name/address: postgres
 - Port: 5432
 - Maintenance database: polymer_extractor
@@ -506,22 +544,14 @@ Use these values when registering a new server in pgAdmin (Servers → Register 
 - Password: use the value from `.env` (POSTGRES_PASSWORD)
 - Save password: Yes
 
-3) SSL tab
+**SSL tab:**
 - SSL mode: Disable
 
-4) Advanced tab (optional)
-- Role: leave blank
-- Service: leave blank
+Click Save; the server should appear under Servers → polymer-postgres.
 
-5) Save
-- Click Save; the server should appear under Servers → polymer-postgres.
+Note: These values match docker-compose defaults where pgAdmin and PostgreSQL run on the same Compose network; the service hostname is `postgres`. If you override credentials, use your `.env` values.
 
-Notes
-- These values match docker-compose defaults where pgAdmin and PostgreSQL run on the same Compose network; the service hostname is `postgres`.
-- If you override credentials, use your `.env` values (POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB).
-- pgAdmin UI runs at http://localhost:5050 (HTTP).
-
-### **Direct Access**
+### Direct Access
 
 ```bash
 docker exec -it polymer_postgres psql -U pnlp_db_user -d polymer_extractor
@@ -529,9 +559,11 @@ docker exec -it polymer_neo4j cypher-shell -u neo4j
 # Neo4j browser: http://localhost:7474
 ```
 
-## ⚠️ **Troubleshooting**
+## Troubleshooting
 
-### **Docker Permission Issues (Linux Only)**
+## Troubleshooting
+
+### Docker Permission Issues (Linux Only)
 
 ```bash
 sudo usermod -aG docker $USER
@@ -540,7 +572,7 @@ docker ps
 # If issues persist: sudo ./server.sh services
 ```
 
-### **Docker File Ownership Issues**
+### Docker File Ownership Issues
 
 **Problem**: Docker containers may create files with container user ownership instead of your user.
 
@@ -558,7 +590,7 @@ docker ps
 
 **Note**: If you see "UID: readonly variable" errors, the system automatically uses `DOCKER_UID`/`DOCKER_GID` instead of the system's readonly `UID`/`GID` variables.
 
-### **Service Issues**
+### Service Issues
 
 ```bash
 ./server.sh status                    # Check status
@@ -576,9 +608,9 @@ pkill -f uvicorn                     # Kill existing uvicorn processes
 ./server.sh                          # Restart
 ```
 
-### **Script Line Ending Issues (Windows/Cross-Platform)**
+### Script Line Ending Issues (Windows/Cross-Platform)
 
-**Problem**: If `./server.sh` fails with cryptic errors like "command not found" or shows Windows-style carriage return characters (`^M`), the script has Windows CRLF line endings instead of Unix LF line endings.
+**Problem**: If `./server.sh` fails with cryptic errors like "command not found" or shows Windows-style carriage return characters, the script has Windows CRLF line endings instead of Unix LF line endings.
 
 **Symptoms**:
 ```bash
@@ -609,16 +641,16 @@ file server.sh                       # Should show "POSIX shell script"
 ./server.sh status                   # Should run without line ending errors
 ```
 
-### **Database Connection Issues**
+### Database Connection Issues
 
 ```bash
 docker exec polymer_postgres psql -U pnlp_db_user -d polymer_extractor -c "SELECT version();"
-docker exec polymer_neo4j cypher-shell -u neo4j -p your_password "RETURN 'OK'"
+docker exec polymer_neo4j cypher-shell -u neo4j -p <neo4j_password> "RETURN 'OK'"
 ./server.sh clean
 ./server.sh services
 ```
 
-### **Application Issues**
+### Application Issues
 
 ```bash
 source .venv/bin/activate
@@ -630,7 +662,7 @@ python3 --version                     # Should be 3.8+
 
 **Storage Upload Errors**: If you see `"BucketClient.upload_file() got an unexpected keyword argument 'local_path'"`, this has been fixed by updating the BucketClient API calls to use the correct parameters (`file_path`, `content`, `metadata`).
 
-### **Platform-Specific Issues**
+### Platform-Specific Issues
 
 **Linux:**
 ```bash
@@ -653,38 +685,13 @@ export ARCHFLAGS="-arch arm64"
 arch -arm64 pip3 install --upgrade pip
 ```
 
----
-
-## 📁 **Project Structure**
-
-```
-polymer_nlp_extractor/
-├── polymer_extractor/          # Main application code
-│   ├── api/                    # FastAPI route handlers
-│   ├── services/               # Business logic services
-│   ├── storage/                # Database clients and managers
-│   └── utils/                  # Utilities and helpers
-├── notebooks/                  # Jupyter notebooks for training
-├── workspace/                  # Data, models, and processing files
-├── docker-compose.services.yml # Docker services configuration
-├── server.sh                   # Enhanced startup script
-├── .env.example               # Environment template
-└── README.md                  # This file
-```
-
-## 🤝 **Contributing**
+## Contributing
 
 1. Fork the repository
 2. Create a feature branch: `git checkout -b feature/amazing-feature`
 3. Make your changes following the coding standards
 4. Test thoroughly using the provided test suite
 5. Submit a pull request with detailed description
-
-## 📄 **License**
-
-[Add your license information here]
-
----
 
 For more detailed documentation, see the `model_updates/` directory and project structure documentation.
 

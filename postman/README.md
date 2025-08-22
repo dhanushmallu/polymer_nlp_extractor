@@ -2,7 +2,7 @@
 
 ## Overview
 
-This directory contains four comprehensive Postman collections for testing and interacting with the Polymer NLP Extractor API ecosystem. All collections follow a standardized structure for consistency and ease of use.
+This directory contains five comprehensive Postman collections for testing and interacting with the Polymer NLP Extractor API ecosystem. All collections follow a standardized structure for consistency and ease of use.
 
 ## Collections
 
@@ -89,6 +89,25 @@ This directory contains four comprehensive Postman collections for testing and i
 - Batch processing of multiple files
 - Session-aware file management
 - TEI XML generation and retrieval
+
+### 5. Polymer NLP Extractor - DOCUMENTATION
+**File**: `documentation.postman_collection.json`
+**Purpose**: Access and browse project documentation
+
+**Key Endpoints**:
+- **List Documentation Files**: Get all available documentation with metadata
+- **Get Documentation File (Markdown)**: Retrieve files in raw Markdown format
+- **Get Documentation File (HTML)**: Retrieve files converted to HTML
+- **Get Documentation File (Raw)**: Retrieve files in raw text format
+- **Get Multi-User Architecture Guide**: Access architecture documentation
+- **Get Implementation Summary**: Access implementation status documentation
+- **Test Error Handling**: Validate security and error responses
+
+**Use Cases**:
+- Browse project documentation programmatically
+- Access developer guides and architecture documents
+- Integrate documentation into external tools
+- Validate documentation API security and error handling
 
 ## Collection Standards
 
