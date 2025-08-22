@@ -13,7 +13,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from server_manager import ServerManager
 
 # Phase 0D: Removed finetune import as training is now handled exclusively by notebook
-from api import groundtruth, preprocessing, setup, grobid, ensemble_inference, evaluation, models_sync
+from api import groundtruth, preprocessing, setup, grobid, ensemble_inference, evaluation, models_sync, session, documentation
 
 # Global setup service instance
 setup_service = None
@@ -123,6 +123,9 @@ app = FastAPI(
 # Include Setup API router
 app.include_router(setup.router, prefix="/api", tags=["Setup"])
 
+# Include Session Management API router
+app.include_router(session.router, prefix="/api", tags=["Session"])
+
 # Include GROBID API router
 app.include_router(grobid.router, prefix="/api", tags=["GROBID"])
 
@@ -143,6 +146,9 @@ app.include_router(evaluation.router, prefix="/api", tags=["Evaluation"])
 
 # Include Models Sync API router (Phase 2 enhancement)
 app.include_router(models_sync.router, prefix="/api", tags=["Models Sync"])
+
+# Include Documentation API router
+app.include_router(documentation.router, prefix="/api", tags=["Documentation"])
 
 
 @app.get("/")
@@ -165,9 +171,14 @@ def root():
             "groundtruth": "/api/groundtruth/* - Ground truth data management",
             "preprocessing": "/api/preprocessing/* - Data preprocessing workflows",
             "inference": "/api/inference/* - Ensemble model inference",
-            "evaluation": "/api/evaluation/* - Model evaluation and metrics"
+            "evaluation": "/api/evaluation/* - Model evaluation and metrics",
+            "documentation": "/api/docs/* - Project documentation and guides"
         },
-        "documentation": "/docs",
+        "documentation": {
+            "api_docs": "/docs",
+            "project_docs": "/api/docs-ui",
+            "files_api": "/api/docs"
+        },
         "help": "/help",
         "server_management": "Use ./server.sh for Docker service management",
         "training": "Use notebooks/model_training_finetuning.ipynb for model training"

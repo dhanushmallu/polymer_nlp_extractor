@@ -431,20 +431,92 @@ class SessionManager:
 
         Notes
         -----
-        - Complexity: O(1) session lookup
-        - Side Effects: Updates last_activity timestamp
+        - Complexity: O(1) session lookup with O(1) database fallback
+        - Side Effects: Updates last_activity timestamp, loads from DB if needed
         """
         if isinstance(session_id, str):
             session_id = UUID(session_id)
         
         with self._session_lock:
             session = self._sessions.get(session_id)
+            
+            # If not in memory, try to load from database
+            if not session:
+                try:
+                    session_data = self.database_manager.get_record("user_sessions", str(session_id))
+                    if session_data and session_data.get("status") in ["active", "processing", "idle"]:
+                        # Reconstruct session object from database
+                        
+                        # Parse resource requirements
+                        resource_req = session_data.get("resource_requirements", {})
+                        if isinstance(resource_req, dict):
+                            resource_requirements = ResourceRequirements(
+                                models=resource_req.get("models", []),
+                                memory_gb=resource_req.get("memory_gb", 2.0),
+                                cpu_cores=resource_req.get("cpu_cores", 1),
+                                storage_gb=resource_req.get("storage_gb", 1.0),
+                                priority=resource_req.get("priority", 1)
+                            )
+                        else:
+                            resource_requirements = ResourceRequirements()
+                        
+                        # Create session object
+                        session = UserSession(
+                            id=session_id,
+                            user_id=session_data["user_id"],
+                            session_name=session_data["session_name"],
+                            status=SessionStatus(session_data["status"]),
+                            resource_requirements=resource_requirements,
+                            allocated_resources=session_data.get("allocated_resources", {}),
+                            created_at=datetime.fromisoformat(session_data["created_at"].replace('Z', '+00:00')) if isinstance(session_data["created_at"], str) else session_data["created_at"],
+                            last_activity=datetime.fromisoformat(session_data.get("last_activity", session_data["created_at"]).replace('Z', '+00:00')) if isinstance(session_data.get("last_activity", session_data["created_at"]), str) else session_data.get("last_activity", session_data["created_at"]),
+                            expires_at=datetime.fromisoformat(session_data["expires_at"].replace('Z', '+00:00')) if session_data.get("expires_at") and isinstance(session_data["expires_at"], str) else session_data.get("expires_at"),
+                            storage_prefix=session_data.get("storage_prefix", ""),
+                            metadata=session_data.get("metadata", {})
+                        )
+                        
+                        # Add to memory cache
+                        self._sessions[session_id] = session
+                        if session.user_id not in self._user_sessions:
+                            self._user_sessions[session.user_id] = set()
+                        self._user_sessions[session.user_id].add(session_id)
+                        
+                        # Initialize metrics if not present
+                        if session_id not in self._session_metrics:
+                            self._session_metrics[session_id] = {
+                                "extractions_count": 0,
+                                "entities_extracted": 0,
+                                "papers_processed": 0,
+                                "total_processing_time_ms": 0,
+                                "average_confidence": 0.0,
+                                "resource_utilization": {}
+                            }
+                        
+                        self.logger.debug(f"Loaded session from database", 
+                                        source="session_manager", session_id=str(session_id))
+                        
+                except Exception as e:
+                    self.logger.warning(f"Failed to load session from database", 
+                                      source="session_manager", session_id=str(session_id), error=str(e))
+                    return None
+            
             if session:
                 # Update activity tracking
                 session.last_activity = datetime.now()
                 # Extend expiration if session is active
                 if session.status == SessionStatus.ACTIVE:
                     session.expires_at = session.last_activity + timedelta(minutes=self.session_timeout_minutes)
+                
+                # Update database with new activity time
+                try:
+                    self.database_manager.update_record("user_sessions", str(session_id), {
+                        "last_activity": session.last_activity,
+                        "expires_at": session.expires_at
+                    })
+                except Exception as e:
+                    self.logger.warning(f"Failed to update session activity", 
+                                      source="session_manager", session_id=str(session_id), error=str(e))
+            
             return session
 
     def list_user_sessions(self, user_id: str, status_filter: Optional[SessionStatus] = None) -> List[UserSession]:

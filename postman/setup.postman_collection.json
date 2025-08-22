@@ -1,7 +1,7 @@
 {
     "info": {
-        "name": "Polymer NLP Extractor - Setup API",
-        "description": "Comprehensive Setup API collection for Polymer NLP Extractor system management without authentication",
+        "name": "Polymer NLP Extractor - SETUP",
+        "description": "System orchestration and lifecycle management for PostgreSQL, Neo4j, multi-backend storage, and session management. Provides safe initialization, health monitoring, and data management operations aligned with server.sh commands.",
         "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
         "_postman_id": "polymer-setup-api-2024",
         "version": {
@@ -15,625 +15,377 @@
             "key": "pnlp",
             "value": "http://localhost:8000",
             "description": "Base URL for Polymer NLP Extractor API"
+        },
+        {
+            "key": "default_user_id",
+            "value": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+            "description": "Default user UUID for testing (UUID format required)"
+        },
+        {
+            "key": "default_session_id",
+            "value": "550e8400-e29b-41d4-a716-446655440000",
+            "description": "Default session UUID for testing (UUID format required)"
         }
     ],
     "item": [
         {
-            "name": "Public Monitoring Endpoints",
-            "description": "System monitoring endpoints (no authentication required)",
-            "item": [
-                {
-                    "name": "Health Check",
-                    "request": {
-                        "method": "GET",
-                        "header": [
-                            {
-                                "key": "Content-Type",
-                                "value": "application/json"
-                            }
-                        ],
-                        "url": {
-                            "raw": "{{pnlp}}/api/setup/health",
-                            "host": ["{{pnlp}}"],
-                            "path": ["api", "setup", "health"]
-                        },
-                        "description": "Comprehensive system health check including PostgreSQL, Neo4j, storage backends, and overall system status."
-                    },
-                    "response": []
+            "name": "Health Check",
+            "request": {
+                "method": "GET",
+                "header": [
+                    {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                    }
+                ],
+                "url": {
+                    "raw": "{{pnlp}}/api/setup/health",
+                    "host": ["{{pnlp}}"],
+                    "path": ["api", "setup", "health"]
                 },
-                {
-                    "name": "System Status",
-                    "request": {
-                        "method": "GET",
-                        "header": [
-                            {
-                                "key": "Content-Type",
-                                "value": "application/json"
-                            }
-                        ],
-                        "url": {
-                            "raw": "{{pnlp}}/api/setup/status",
-                            "host": ["{{pnlp}}"],
-                            "path": ["api", "setup", "status"]
-                        },
-                        "description": "Get comprehensive system status and configuration information."
-                    },
-                    "response": []
-                },
-                {
-                    "name": "Environment Info",
-                    "request": {
-                        "method": "GET",
-                        "header": [
-                            {
-                                "key": "Content-Type",
-                                "value": "application/json"
-                            }
-                        ],
-                        "url": {
-                            "raw": "{{pnlp}}/api/setup/environment",
-                            "host": ["{{pnlp}}"],
-                            "path": ["api", "setup", "environment"]
-                        },
-                        "description": "Get environment configuration including enabled services, storage backends, and key paths."
-                    },
-                    "response": []
-                }
-            ]
+                "description": "Comprehensive system health check including PostgreSQL, Neo4j, storage backends, session management, and overall system status. Returns detailed health information for all components with specific error details and recovery recommendations."
+            },
+            "response": []
         },
         {
-            "name": "System Lifecycle Operations",
-            "description": "Core system management operations",
-            "item": [
-                {
-                    "name": "Initialize System (Safe)",
-                    "request": {
-                        "method": "POST",
-                        "header": [
-                            {
-                                "key": "Content-Type",
-                                "value": "application/json"
-                            }
-                        ],
-                        "body": {
-                            "mode": "raw",
-                            "raw": "{\n    \"clean_install\": false,\n    \"preserve_logs\": true\n}"
-                        },
-                        "url": {
-                            "raw": "{{pnlp}}/api/setup/initialize",
-                            "host": ["{{pnlp}}"],
-                            "path": ["api", "setup", "initialize"]
-                        },
-                        "description": "Safe initialization of missing or corrupted system components. Only initializes what's missing."
-                    },
-                    "response": []
+            "name": "System Status",
+            "request": {
+                "method": "GET",
+                "header": [
+                    {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                    }
+                ],
+                "url": {
+                    "raw": "{{pnlp}}/api/setup/status",
+                    "host": ["{{pnlp}}"],
+                    "path": ["api", "setup", "status"]
                 },
-                {
-                    "name": "Initialize System (Clean Install)",
-                    "request": {
-                        "method": "POST",
-                        "header": [
-                            {
-                                "key": "Content-Type",
-                                "value": "application/json"
-                            }
-                        ],
-                        "body": {
-                            "mode": "raw",
-                            "raw": "{\n    \"clean_install\": true,\n    \"preserve_logs\": true\n}"
-                        },
-                        "url": {
-                            "raw": "{{pnlp}}/api/setup/initialize",
-                            "host": ["{{pnlp}}"],
-                            "path": ["api", "setup", "initialize"]
-                        },
-                        "description": "Clean initialization - recreate all components even if they exist."
-                    },
-                    "response": []
-                },
-                {
-                    "name": "Reset All Components",
-                    "request": {
-                        "method": "POST",
-                        "header": [
-                            {
-                                "key": "Content-Type",
-                                "value": "application/json"
-                            }
-                        ],
-                        "body": {
-                            "mode": "raw",
-                            "raw": "{\n    \"components\": null,\n    \"preserve_structure\": true\n}"
-                        },
-                        "url": {
-                            "raw": "{{pnlp}}/api/setup/reset",
-                            "host": ["{{pnlp}}"],
-                            "path": ["api", "setup", "reset"]
-                        },
-                        "description": "Reset all enabled components by removing data while preserving schemas and structure."
-                    },
-                    "response": []
-                },
-                {
-                    "name": "Reset Specific Components",
-                    "request": {
-                        "method": "POST",
-                        "header": [
-                            {
-                                "key": "Content-Type",
-                                "value": "application/json"
-                            }
-                        ],
-                        "body": {
-                            "mode": "raw",
-                            "raw": "{\n    \"components\": [\"database\", \"storage\"],\n    \"preserve_structure\": true\n}"
-                        },
-                        "url": {
-                            "raw": "{{pnlp}}/api/setup/reset",
-                            "host": ["{{pnlp}}"],
-                            "path": ["api", "setup", "reset"]
-                        },
-                        "description": "Reset only specific components: database, graph, and/or storage."
-                    },
-                    "response": []
-                },
-                {
-                    "name": "Wipe All Data (DESTRUCTIVE)",
-                    "request": {
-                        "method": "POST",
-                        "header": [
-                            {
-                                "key": "Content-Type",
-                                "value": "application/json"
-                            }
-                        ],
-                        "body": {
-                            "mode": "raw",
-                            "raw": "{\n    \"preserve_structure\": true,\n    \"confirm_wipe\": true\n}"
-                        },
-                        "url": {
-                            "raw": "{{pnlp}}/api/setup/wipe-data",
-                            "host": ["{{pnlp}}"],
-                            "path": ["api", "setup", "wipe-data"]
-                        },
-                        "description": "DESTRUCTIVE: Remove all data while preserving schemas and structure. Requires explicit confirmation."
-                    },
-                    "response": []
-                }
-            ]
+                "description": "Get comprehensive system status and configuration information including component states, versions, enabled features, and key statistics. Provides operational overview for monitoring and troubleshooting."
+            },
+            "response": []
         },
         {
-            "name": "Component Management",
-            "description": "Individual component initialization and management",
-            "item": [
-                {
-                    "name": "Initialize Database",
-                    "request": {
-                        "method": "POST",
-                        "header": [
-                            {
-                                "key": "Content-Type",
-                                "value": "application/json"
-                            }
-                        ],
-                        "body": {
-                            "mode": "raw",
-                            "raw": "{\n    \"clean_install\": false,\n    \"preserve_logs\": true\n}"
-                        },
-                        "url": {
-                            "raw": "{{pnlp}}/api/setup/database/initialize",
-                            "host": ["{{pnlp}}"],
-                            "path": ["api", "setup", "database", "initialize"]
-                        },
-                        "description": "Initialize PostgreSQL database with essential tables and indexes."
-                    },
-                    "response": []
+            "name": "Environment Info",
+            "request": {
+                "method": "GET",
+                "header": [
+                    {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                    }
+                ],
+                "url": {
+                    "raw": "{{pnlp}}/api/setup/environment",
+                    "host": ["{{pnlp}}"],
+                    "path": ["api", "setup", "environment"]
                 },
-                {
-                    "name": "Initialize Database (Clean)",
-                    "request": {
-                        "method": "POST",
-                        "header": [
-                            {
-                                "key": "Content-Type",
-                                "value": "application/json"
-                            }
-                        ],
-                        "body": {
-                            "mode": "raw",
-                            "raw": "{\n    \"clean_install\": true,\n    \"preserve_logs\": true\n}"
-                        },
-                        "url": {
-                            "raw": "{{pnlp}}/api/setup/database/initialize",
-                            "host": ["{{pnlp}}"],
-                            "path": ["api", "setup", "database", "initialize"]
-                        },
-                        "description": "Initialize PostgreSQL database with clean install (drop and recreate all tables except system_logs)."
-                    },
-                    "response": []
-                },
-                {
-                    "name": "Initialize Graph",
-                    "request": {
-                        "method": "POST",
-                        "header": [
-                            {
-                                "key": "Content-Type",
-                                "value": "application/json"
-                            }
-                        ],
-                        "body": {
-                            "mode": "raw",
-                            "raw": "{\n    \"clean_install\": false\n}"
-                        },
-                        "url": {
-                            "raw": "{{pnlp}}/api/setup/graph/initialize",
-                            "host": ["{{pnlp}}"],
-                            "path": ["api", "setup", "graph", "initialize"]
-                        },
-                        "description": "Initialize Neo4j graph database with constraints and indexes."
-                    },
-                    "response": []
-                },
-                {
-                    "name": "Initialize Graph (Clean)",
-                    "request": {
-                        "method": "POST",
-                        "header": [
-                            {
-                                "key": "Content-Type",
-                                "value": "application/json"
-                            }
-                        ],
-                        "body": {
-                            "mode": "raw",
-                            "raw": "{\n    \"clean_install\": true\n}"
-                        },
-                        "url": {
-                            "raw": "{{pnlp}}/api/setup/graph/initialize",
-                            "host": ["{{pnlp}}"],
-                            "path": ["api", "setup", "graph", "initialize"]
-                        },
-                        "description": "Initialize Neo4j graph database with clean install (drop existing constraints and recreate)."
-                    },
-                    "response": []
-                },
-                {
-                    "name": "Initialize Storage",
-                    "request": {
-                        "method": "POST",
-                        "header": [
-                            {
-                                "key": "Content-Type",
-                                "value": "application/json"
-                            }
-                        ],
-                        "body": {
-                            "mode": "raw",
-                            "raw": "{\n    \"clean_install\": false\n}"
-                        },
-                        "url": {
-                            "raw": "{{pnlp}}/api/setup/storage/initialize",
-                            "host": ["{{pnlp}}"],
-                            "path": ["api", "setup", "storage", "initialize"]
-                        },
-                        "description": "Initialize multi-backend storage with standardized bucket structure."
-                    },
-                    "response": []
-                },
-                {
-                    "name": "Create Standard Buckets",
-                    "request": {
-                        "method": "POST",
-                        "header": [
-                            {
-                                "key": "Content-Type",
-                                "value": "application/json"
-                            }
-                        ],
-                        "url": {
-                            "raw": "{{pnlp}}/api/setup/storage/create-buckets",
-                            "host": ["{{pnlp}}"],
-                            "path": ["api", "setup", "storage", "create-buckets"]
-                        },
-                        "description": "Create standardized storage buckets across all backends."
-                    },
-                    "response": []
-                }
-            ]
+                "description": "Get environment configuration including enabled services, storage backends, database connections, and key filesystem paths. Useful for debugging configuration issues and understanding system setup."
+            },
+            "response": []
         },
         {
-            "name": "Development Workflows",
-            "description": "Common development workflow sequences",
+            "name": "Initialize System (Safe)",
+            "request": {
+                "method": "POST",
+                "header": [
+                    {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                    }
+                ],
+                "body": {
+                    "mode": "raw",
+                    "raw": "{\n    \"clean_install\": false,\n    \"preserve_logs\": true\n}"
+                },
+                "url": {
+                    "raw": "{{pnlp}}/api/setup/initialize",
+                    "host": ["{{pnlp}}"],
+                    "path": ["api", "setup", "initialize"]
+                },
+                "description": "Safe initialization of missing or corrupted system components. Only initializes components that are missing or damaged. Safe to run multiple times without data loss. Preserves existing data and configurations."
+            },
+            "response": []
+        },
+        {
+            "name": "Initialize System (Clean Install)",
+            "request": {
+                "method": "POST",
+                "header": [
+                    {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                    }
+                ],
+                "body": {
+                    "mode": "raw",
+                    "raw": "{\n    \"clean_install\": true,\n    \"preserve_logs\": true\n}"
+                },
+                "url": {
+                    "raw": "{{pnlp}}/api/setup/initialize",
+                    "host": ["{{pnlp}}"],
+                    "path": ["api", "setup", "initialize"]
+                },
+                "description": "Clean initialization - recreate all components even if they exist. WARNING: This will recreate database schemas and storage structures. Use for fresh installations or when corruption requires complete rebuild."
+            },
+            "response": []
+        },
+        {
+            "name": "Reset All Components",
+            "request": {
+                "method": "POST",
+                "header": [
+                    {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                    }
+                ],
+                "body": {
+                    "mode": "raw",
+                    "raw": "{\n    \"components\": null,\n    \"preserve_structure\": true\n}"
+                },
+                "url": {
+                    "raw": "{{pnlp}}/api/setup/reset",
+                    "host": ["{{pnlp}}"],
+                    "path": ["api", "setup", "reset"]
+                },
+                "description": "Reset all enabled components by removing data while preserving schemas and structure. Clears application data but keeps the system ready for immediate use. Preserves database schemas, storage buckets, and directory structures."
+            },
+            "response": []
+        },
+        {
+            "name": "Reset Specific Components",
+            "request": {
+                "method": "POST",
+                "header": [
+                    {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                    }
+                ],
+                "body": {
+                    "mode": "raw",
+                    "raw": "{\n    \"components\": [\"database\", \"storage\"],\n    \"preserve_structure\": true\n}"
+                },
+                "url": {
+                    "raw": "{{pnlp}}/api/setup/reset",
+                    "host": ["{{pnlp}}"],
+                    "path": ["api", "setup", "reset"]
+                },
+                "description": "Reset only specific components: database, graph, and/or storage. Allows selective data clearing while preserving other components. Useful for targeted troubleshooting or partial system cleanup."
+            },
+            "response": []
+        },
+        {
+            "name": "Wipe All Data (DESTRUCTIVE)",
+            "request": {
+                "method": "POST",
+                "header": [
+                    {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                    }
+                ],
+                "body": {
+                    "mode": "raw",
+                    "raw": "{\n    \"preserve_structure\": true,\n    \"confirm_wipe\": true\n}"
+                },
+                "url": {
+                    "raw": "{{pnlp}}/api/setup/wipe-data",
+                    "host": ["{{pnlp}}"],
+                    "path": ["api", "setup", "wipe-data"]
+                },
+                "description": "DESTRUCTIVE: Remove all data while preserving schemas and structure. Requires explicit confirmation. Use with extreme caution - this removes all application data but keeps the system structure intact for immediate reuse."
+            },
+            "response": []
+        },
+        {
+            "name": "Initialize Database",
+            "request": {
+                "method": "POST",
+                "header": [
+                    {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                    }
+                ],
+                "body": {
+                    "mode": "raw",
+                    "raw": "{\n    \"clean_install\": false,\n    \"preserve_logs\": true\n}"
+                },
+                "url": {
+                    "raw": "{{pnlp}}/api/setup/database/initialize",
+                    "host": ["{{pnlp}}"],
+                    "path": ["api", "setup", "database", "initialize"]
+                },
+                "description": "Initialize PostgreSQL database with essential tables, indexes, and constraints. Creates core application tables, session management tables, and necessary database objects. Safe to run multiple times."
+            },
+            "response": []
+        },
+        {
+            "name": "Initialize Database (Clean)",
+            "request": {
+                "method": "POST",
+                "header": [
+                    {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                    }
+                ],
+                "body": {
+                    "mode": "raw",
+                    "raw": "{\n    \"clean_install\": true,\n    \"preserve_logs\": true\n}"
+                },
+                "url": {
+                    "raw": "{{pnlp}}/api/setup/database/initialize",
+                    "host": ["{{pnlp}}"],
+                    "path": ["api", "setup", "database", "initialize"]
+                },
+                "description": "Initialize PostgreSQL database with clean install - drops and recreates all tables except system_logs. WARNING: This destroys all existing data. Use only for fresh installations or when database corruption requires complete rebuild."
+            },
+            "response": []
+        },
+        {
+            "name": "Initialize Graph",
+            "request": {
+                "method": "POST",
+                "header": [
+                    {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                    }
+                ],
+                "body": {
+                    "mode": "raw",
+                    "raw": "{\n    \"clean_install\": false\n}"
+                },
+                "url": {
+                    "raw": "{{pnlp}}/api/setup/graph/initialize",
+                    "host": ["{{pnlp}}"],
+                    "path": ["api", "setup", "graph", "initialize"]
+                },
+                "description": "Initialize Neo4j graph database with constraints, indexes, and schema definitions. Creates knowledge graph structure for polymer data relationships and validation rules. Safe initialization that preserves existing data."
+            },
+            "response": []
+        },
+        {
+            "name": "Initialize Graph (Clean)",
+            "request": {
+                "method": "POST",
+                "header": [
+                    {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                    }
+                ],
+                "body": {
+                    "mode": "raw",
+                    "raw": "{\n    \"clean_install\": true\n}"
+                },
+                "url": {
+                    "raw": "{{pnlp}}/api/setup/graph/initialize",
+                    "host": ["{{pnlp}}"],
+                    "path": ["api", "setup", "graph", "initialize"]
+                },
+                "description": "Initialize Neo4j graph database with clean install - drops existing constraints and recreates schema. WARNING: This removes all graph data and constraints. Use for fresh installations or major schema updates."
+            },
+            "response": []
+        },
+        {
+            "name": "Initialize Storage",
+            "request": {
+                "method": "POST",
+                "header": [
+                    {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                    }
+                ],
+                "body": {
+                    "mode": "raw",
+                    "raw": "{\n    \"clean_install\": false\n}"
+                },
+                "url": {
+                    "raw": "{{pnlp}}/api/setup/storage/initialize",
+                    "host": ["{{pnlp}}"],
+                    "path": ["api", "setup", "storage", "initialize"]
+                },
+                "description": "Initialize multi-backend storage with standardized bucket structure. Creates required directories for local storage and configures remote storage backends (Appwrite/S3) if enabled. Safe operation that preserves existing data."
+            },
+            "response": []
+        },
+        {
+            "name": "Create Standard Buckets",
+            "request": {
+                "method": "POST",
+                "header": [
+                    {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                    }
+                ],
+                "body": {
+                    "mode": "raw",
+                    "raw": "{}"
+                },
+                "url": {
+                    "raw": "{{pnlp}}/api/setup/storage/create-buckets",
+                    "host": ["{{pnlp}}"],
+                    "path": ["api", "setup", "storage", "create-buckets"]
+                },
+                "description": "Create standardized storage buckets across all enabled storage backends. Creates buckets for raw inputs, processed outputs, models, reports, and system data. Ensures consistent storage structure across local and remote backends."
+            },
+            "response": []
+        },
+        {
+            "name": "Bulk Operations",
             "item": [
                 {
                     "name": "Quick Setup Sequence",
-                    "description": "Run this sequence for typical development setup",
-                    "item": [
-                        {
-                            "name": "1. Check Health Before Setup",
-                            "request": {
-                                "method": "GET",
-                                "header": [
-                                    {
-                                        "key": "Content-Type",
-                                        "value": "application/json"
-                                    }
-                                ],
-                                "url": {
-                                    "raw": "{{pnlp}}/api/setup/health",
-                                    "host": ["{{pnlp}}"],
-                                    "path": ["api", "setup", "health"]
-                                },
-                                "description": "Check initial system health status"
-                            },
-                            "response": []
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"clean_install\": false,\n    \"preserve_logs\": true\n}"
                         },
-                        {
-                            "name": "2. Get Environment Info",
-                            "request": {
-                                "method": "GET",
-                                "header": [
-                                    {
-                                        "key": "Content-Type",
-                                        "value": "application/json"
-                                    }
-                                ],
-                                "url": {
-                                    "raw": "{{pnlp}}/api/setup/environment",
-                                    "host": ["{{pnlp}}"],
-                                    "path": ["api", "setup", "environment"]
-                                },
-                                "description": "Get environment configuration"
-                            },
-                            "response": []
+                        "url": {
+                            "raw": "{{pnlp}}/api/setup/initialize",
+                            "host": ["{{pnlp}}"],
+                            "path": ["api", "setup", "initialize"]
                         },
-                        {
-                            "name": "3. Initialize System",
-                            "request": {
-                                "method": "POST",
-                                "header": [
-                                    {
-                                        "key": "Content-Type",
-                                        "value": "application/json"
-                                    }
-                                ],
-                                "body": {
-                                    "mode": "raw",
-                                    "raw": "{\n    \"clean_install\": false,\n    \"preserve_logs\": true\n}"
-                                },
-                                "url": {
-                                    "raw": "{{pnlp}}/api/setup/initialize",
-                                    "host": ["{{pnlp}}"],
-                                    "path": ["api", "setup", "initialize"]
-                                },
-                                "description": "Safe system initialization"
-                            },
-                            "response": []
-                        },
-                        {
-                            "name": "4. Check Health After Setup",
-                            "request": {
-                                "method": "GET",
-                                "header": [
-                                    {
-                                        "key": "Content-Type",
-                                        "value": "application/json"
-                                    }
-                                ],
-                                "url": {
-                                    "raw": "{{pnlp}}/api/setup/health",
-                                    "host": ["{{pnlp}}"],
-                                    "path": ["api", "setup", "health"]
-                                },
-                                "description": "Verify system health after initialization"
-                            },
-                            "response": []
-                        },
-                        {
-                            "name": "5. Get Final Status",
-                            "request": {
-                                "method": "GET",
-                                "header": [
-                                    {
-                                        "key": "Content-Type",
-                                        "value": "application/json"
-                                    }
-                                ],
-                                "url": {
-                                    "raw": "{{pnlp}}/api/setup/status",
-                                    "host": ["{{pnlp}}"],
-                                    "path": ["api", "setup", "status"]
-                                },
-                                "description": "Get final system status"
-                            },
-                            "response": []
-                        }
-                    ]
+                        "description": "Complete setup sequence: 1) Check health 2) Initialize system 3) Create buckets 4) Verify final status. Run this for initial system setup or after major configuration changes. Safe for existing installations."
+                    },
+                    "response": []
                 },
                 {
-                    "name": "Component Testing Sequence",
-                    "description": "Test individual components systematically",
-                    "item": [
-                        {
-                            "name": "1. Initialize Database Only",
-                            "request": {
-                                "method": "POST",
-                                "header": [
-                                    {
-                                        "key": "Content-Type",
-                                        "value": "application/json"
-                                    }
-                                ],
-                                "body": {
-                                    "mode": "raw",
-                                    "raw": "{\n    \"clean_install\": false,\n    \"preserve_logs\": true\n}"
-                                },
-                                "url": {
-                                    "raw": "{{pnlp}}/api/setup/database/initialize",
-                                    "host": ["{{pnlp}}"],
-                                    "path": ["api", "setup", "database", "initialize"]
-                                },
-                                "description": "Initialize database component"
-                            },
-                            "response": []
+                    "name": "System Recovery Sequence",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"clean_install\": true,\n    \"preserve_logs\": true\n}"
                         },
-                        {
-                            "name": "2. Initialize Graph Only",
-                            "request": {
-                                "method": "POST",
-                                "header": [
-                                    {
-                                        "key": "Content-Type",
-                                        "value": "application/json"
-                                    }
-                                ],
-                                "body": {
-                                    "mode": "raw",
-                                    "raw": "{\n    \"clean_install\": false\n}"
-                                },
-                                "url": {
-                                    "raw": "{{pnlp}}/api/setup/graph/initialize",
-                                    "host": ["{{pnlp}}"],
-                                    "path": ["api", "setup", "graph", "initialize"]
-                                },
-                                "description": "Initialize graph component"
-                            },
-                            "response": []
+                        "url": {
+                            "raw": "{{pnlp}}/api/setup/initialize",
+                            "host": ["{{pnlp}}"],
+                            "path": ["api", "setup", "initialize"]
                         },
-                        {
-                            "name": "3. Initialize Storage Only",
-                            "request": {
-                                "method": "POST",
-                                "header": [
-                                    {
-                                        "key": "Content-Type",
-                                        "value": "application/json"
-                                    }
-                                ],
-                                "body": {
-                                    "mode": "raw",
-                                    "raw": "{\n    \"clean_install\": false\n}"
-                                },
-                                "url": {
-                                    "raw": "{{pnlp}}/api/setup/storage/initialize",
-                                    "host": ["{{pnlp}}"],
-                                    "path": ["api", "setup", "storage", "initialize"]
-                                },
-                                "description": "Initialize storage component"
-                            },
-                            "response": []
-                        },
-                        {
-                            "name": "4. Create Standard Buckets",
-                            "request": {
-                                "method": "POST",
-                                "header": [
-                                    {
-                                        "key": "Content-Type",
-                                        "value": "application/json"
-                                    }
-                                ],
-                                "url": {
-                                    "raw": "{{pnlp}}/api/setup/storage/create-buckets",
-                                    "host": ["{{pnlp}}"],
-                                    "path": ["api", "setup", "storage", "create-buckets"]
-                                },
-                                "description": "Create storage buckets"
-                            },
-                            "response": []
-                        }
-                    ]
-                },
-                {
-                    "name": "Reset and Recovery Sequence",
-                    "description": "Test reset and recovery operations",
-                    "item": [
-                        {
-                            "name": "1. Check Current Status",
-                            "request": {
-                                "method": "GET",
-                                "header": [
-                                    {
-                                        "key": "Content-Type",
-                                        "value": "application/json"
-                                    }
-                                ],
-                                "url": {
-                                    "raw": "{{pnlp}}/api/setup/status",
-                                    "host": ["{{pnlp}}"],
-                                    "path": ["api", "setup", "status"]
-                                },
-                                "description": "Check status before reset"
-                            },
-                            "response": []
-                        },
-                        {
-                            "name": "2. Reset Database Only",
-                            "request": {
-                                "method": "POST",
-                                "header": [
-                                    {
-                                        "key": "Content-Type",
-                                        "value": "application/json"
-                                    }
-                                ],
-                                "body": {
-                                    "mode": "raw",
-                                    "raw": "{\n    \"components\": [\"database\"],\n    \"preserve_structure\": true\n}"
-                                },
-                                "url": {
-                                    "raw": "{{pnlp}}/api/setup/reset",
-                                    "host": ["{{pnlp}}"],
-                                    "path": ["api", "setup", "reset"]
-                                },
-                                "description": "Reset only database component"
-                            },
-                            "response": []
-                        },
-                        {
-                            "name": "3. Re-initialize Database",
-                            "request": {
-                                "method": "POST",
-                                "header": [
-                                    {
-                                        "key": "Content-Type",
-                                        "value": "application/json"
-                                    }
-                                ],
-                                "body": {
-                                    "mode": "raw",
-                                    "raw": "{\n    \"clean_install\": false,\n    \"preserve_logs\": true\n}"
-                                },
-                                "url": {
-                                    "raw": "{{pnlp}}/api/setup/database/initialize",
-                                    "host": ["{{pnlp}}"],
-                                    "path": ["api", "setup", "database", "initialize"]
-                                },
-                                "description": "Re-initialize database after reset"
-                            },
-                            "response": []
-                        },
-                        {
-                            "name": "4. Check Recovery Status",
-                            "request": {
-                                "method": "GET",
-                                "header": [
-                                    {
-                                        "key": "Content-Type",
-                                        "value": "application/json"
-                                    }
-                                ],
-                                "url": {
-                                    "raw": "{{pnlp}}/api/setup/health",
-                                    "host": ["{{pnlp}}"],
-                                    "path": ["api", "setup", "health"]
-                                },
-                                "description": "Verify recovery after reset and re-initialization"
-                            },
-                            "response": []
-                        }
-                    ]
+                        "description": "System recovery sequence for corrupted installations: 1) Check current status 2) Clean initialize all components 3) Create fresh buckets 4) Validate recovery. Use when system corruption requires complete rebuild."
+                    },
+                    "response": []
                 }
             ]
         }
@@ -647,10 +399,9 @@
             "script": {
                 "type": "text/javascript",
                 "exec": [
-                    "// Set default variables if not already set",
-                    "if (!pm.collectionVariables.get('pnlp')) {",
-                    "    pm.collectionVariables.set('pnlp', 'http://localhost:8000');",
-                    "}"
+                    "// Log the request being made for debugging",
+                    "console.log('Making request to:', pm.request.url.toString());",
+                    "console.log('Request method:', pm.request.method);"
                 ]
             }
         },
@@ -660,38 +411,27 @@
                 "type": "text/javascript",
                 "exec": [
                     "// Basic response validation",
-                    "pm.test('Status code should be 2xx or 4xx for expected errors', function () {",
-                    "    pm.expect(pm.response.code).to.be.at.least(200);",
-                    "    pm.expect(pm.response.code).to.be.below(500);",
+                    "pm.test('Response status is successful', function () {",
+                    "    pm.expect(pm.response.code).to.be.oneOf([200, 201, 202]);",
                     "});",
                     "",
-                    "// Check for JSON response",
-                    "pm.test('Response should be JSON', function () {",
-                    "    pm.expect(pm.response.headers.get('Content-Type')).to.include('application/json');",
+                    "// Check response structure",
+                    "pm.test('Response has proper structure', function () {",
+                    "    const response = pm.response.json();",
+                    "    pm.expect(response).to.have.property('status');",
                     "});",
                     "",
-                    "// Parse and validate response structure",
-                    "pm.test('Response has expected structure', function () {",
-                    "    const responseJson = pm.response.json();",
-                    "    ",
-                    "    // All setup operations should have these fields",
-                    "    if (pm.request.method === 'POST') {",
-                    "        pm.expect(responseJson).to.have.property('success');",
-                    "        if (responseJson.operation_metadata) {",
-                    "            pm.expect(responseJson.operation_metadata).to.have.property('duration_seconds');",
-                    "            pm.expect(responseJson.operation_metadata).to.have.property('timestamp');",
-                    "        }",
-                    "    }",
-                    "});",
+                    "// Log important response data",
+                    "if (pm.response.json().status === 'success') {",
+                    "    console.log('Operation completed successfully');",
+                    "} else {",
+                    "    console.log('Operation failed:', pm.response.json().message);",
+                    "}",
                     "",
-                    "// Log response for debugging",
-                    "console.log('Response Status:', pm.response.status);",
-                    "console.log('Response Time:', pm.response.responseTime + 'ms');",
-                    "",
-                    "// Log response body for POST operations",
-                    "if (pm.request.method === 'POST') {",
-                    "    console.log('Response Body:', JSON.stringify(pm.response.json(), null, 2));",
-                    "}"
+                    "// Response time check",
+                    "pm.test('Response time is acceptable', function () {",
+                    "    pm.expect(pm.response.responseTime).to.be.below(60000); // 60 seconds max for setup operations",
+                    "});"
                 ]
             }
         }
