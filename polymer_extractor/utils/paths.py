@@ -68,7 +68,6 @@ EXTRACTED_XML_DIR: str = os.path.join(PUBLIC_DIR, "extracted_xml_dir")         #
 PROCESSED_XML_DIR: str = os.path.join(PUBLIC_DIR, "processed_xml_dir")         # Cleaned TEI XML files ready for NLP
 SAMPLES_DIR: str = os.path.join(PUBLIC_DIR, "samples_dir")                     # Tokenization output (model_name/<file_name>_tei_sentences.txt, etc.)
 MODELS_DIR: str = os.path.join(PUBLIC_DIR, "models")                       # All models (moved to public for consistency)
-TOKENIZERS_DIR: str = os.path.join(MODELS_DIR, "tokenizers")              # Models extended by tokenization
 REPORTS_DIR: str = os.path.join(PUBLIC_DIR, "full_reports_dir")                     # Reports (public)
 SYSTEM_LOGS_DIR: str = os.path.join(PUBLIC_DIR, "system_logs")             # System logs (public)
 # Grobid is managed in Docker; processed files produced by Grobid should live in public as needed.

@@ -2429,9 +2429,18 @@ class EnsembleInferenceService:
         exact tokenizer each model was trained with.
         """
         # First, try to use extended tokenizer if it exists and is compatible
-        extended_tokenizer_path = Path(WORKSPACE_DIR) / "models" / "tokenizers" / f"{model_name}_extended"
+        models_dir = Path(WORKSPACE_DIR) / "models"
+        extended_tokenizer_path = None
         
-        if extended_tokenizer_path.exists():
+        # Look for tokenizers in versioned directories
+        for tokenizers_dir in models_dir.glob("tokenizers-*"):
+            if tokenizers_dir.is_dir():
+                potential_path = tokenizers_dir / f"{model_name}_extended"
+                if potential_path.exists():
+                    extended_tokenizer_path = potential_path
+                    break
+        
+        if extended_tokenizer_path and extended_tokenizer_path.exists():
             try:
                 extended_tokenizer = AutoTokenizer.from_pretrained(extended_tokenizer_path, use_fast=True)
                 actual_vocab_size = len(extended_tokenizer)

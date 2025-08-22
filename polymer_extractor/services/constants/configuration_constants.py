@@ -63,10 +63,10 @@ MODEL_DEFAULT_CONFIG = {
         "gpu_optimization": True
     },
     
-    # File paths (relative to workspace)
+    # File paths (relative to workspace) - using versioned directories
     "paths": {
-        "models_dir": "models/finetuned",
-        "tokenizers_dir": "models/tokenizers", 
+        "models_dir": "models/finetuned-*",  # Versioned finetuned models
+        "tokenizers_dir": "models/tokenizers-*",  # Versioned tokenizers directory
         "exports_dir": "exports",
         "training_data_dir": "datasets/training",
         "testing_data_dir": "datasets/testing"

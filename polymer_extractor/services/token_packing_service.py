@@ -315,9 +315,20 @@ class TokenPackingService:
         exact tokenizer each model was trained with.
         """
         # First, try to use extended tokenizer if it exists and matches model vocab
-        extended_tokenizer_path = os.path.join(WORKSPACE_DIR, "models", "tokenizers", f"{model_name}_extended")
+        models_dir = os.path.join(WORKSPACE_DIR, "models")
+        extended_tokenizer_path = None
         
-        if os.path.exists(extended_tokenizer_path):
+        # Look for tokenizers in versioned directories
+        for tokenizers_dirname in os.listdir(models_dir):
+            if tokenizers_dirname.startswith("tokenizers-"):
+                tokenizers_dir = os.path.join(models_dir, tokenizers_dirname)
+                if os.path.isdir(tokenizers_dir):
+                    potential_path = os.path.join(tokenizers_dir, f"{model_name}_extended")
+                    if os.path.exists(potential_path):
+                        extended_tokenizer_path = potential_path
+                        break
+        
+        if extended_tokenizer_path and os.path.exists(extended_tokenizer_path):
             try:
                 extended_tokenizer = AutoTokenizer.from_pretrained(extended_tokenizer_path, use_fast=True)
                 # Check if extended tokenizer is compatible (within reasonable range)

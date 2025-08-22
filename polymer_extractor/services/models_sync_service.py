@@ -345,21 +345,34 @@ class ModelsSyncService:
                 result["recommended_actions"].append("Run sync_models_from_github() to download models")
                 return result
             
-            # Check finetuned models
-            finetuned_dir = models_dir / "finetuned-0.0.0"  # Based on current structure
-            tokenizers_dir = models_dir / "tokenizers"
+            # Check finetuned models and tokenizers - look for versioned directories
+            finetuned_dirs = list(models_dir.glob("finetuned-*"))
+            tokenizers_dirs = list(models_dir.glob("tokenizers-*"))
             
-            if not finetuned_dir.exists():
-                result["missing_components"].append("finetuned models directory")
-                result["recommended_actions"].append("Download finetuned models")
+            if not finetuned_dirs:
+                result["missing_components"].append("versioned finetuned models directory (finetuned-*)")
+                result["recommended_actions"].append("Run sync_models_from_github() to download finetuned models")
                 
-            if not tokenizers_dir.exists():
-                result["missing_components"].append("tokenizers directory")
-                result["recommended_actions"].append("Download tokenizers")
+            if not tokenizers_dirs:
+                result["missing_components"].append("versioned tokenizers directory (tokenizers-*)")
+                result["recommended_actions"].append("Run sync_models_from_github() to download tokenizers")
                 
             if result["missing_components"]:
                 result["valid"] = False
                 return result
+            
+            # Sort directories by version number and use the latest
+            def version_sort_key(path):
+                """Extract version number for sorting (e.g., 'finetuned-0.0.2' -> (0, 0, 2))"""
+                try:
+                    version_str = path.name.split('-', 1)[1]  # Get part after first dash
+                    return tuple(map(int, version_str.split('.')))
+                except (ValueError, IndexError):
+                    return (0, 0, 0)  # Fallback for invalid version format
+            
+            # Use latest versioned directories
+            finetuned_dir = sorted(finetuned_dirs, key=version_sort_key, reverse=True)[0]
+            tokenizers_dir = sorted(tokenizers_dirs, key=version_sort_key, reverse=True)[0]
             
             # Validate each model-tokenizer pair
             for model_dir in finetuned_dir.iterdir():
@@ -440,12 +453,32 @@ class ModelsSyncService:
                 return {"up_to_date": False, "models_count": 0, "tokenizers_count": 0, 
                        "version_validated": False}
             
-            # Count existing models and tokenizers
-            finetuned_dir = models_dir / "finetuned-0.0.0"
-            tokenizers_dir = models_dir / "tokenizers"
+            # Count existing models and tokenizers in versioned directories
+            finetuned_dirs = list(models_dir.glob("finetuned-*"))
+            tokenizers_dirs = list(models_dir.glob("tokenizers-*"))
             
-            models_count = len([d for d in finetuned_dir.iterdir() if d.is_dir()]) if finetuned_dir.exists() else 0
-            tokenizers_count = len([d for d in tokenizers_dir.iterdir() if d.is_dir()]) if tokenizers_dir.exists() else 0
+            models_count = 0
+            tokenizers_count = 0
+            
+            # Sort directories by version number and use the latest
+            def version_sort_key(path):
+                """Extract version number for sorting (e.g., 'finetuned-0.0.2' -> (0, 0, 2))"""
+                try:
+                    version_str = path.name.split('-', 1)[1]  # Get part after first dash
+                    return tuple(map(int, version_str.split('.')))
+                except (ValueError, IndexError):
+                    return (0, 0, 0)  # Fallback for invalid version format
+            
+            # Count models in latest versioned directories
+            if finetuned_dirs:
+                latest_finetuned_dir = sorted(finetuned_dirs, key=version_sort_key, reverse=True)[0]
+                if latest_finetuned_dir.is_dir():
+                    models_count = len([d for d in latest_finetuned_dir.iterdir() if d.is_dir()])
+                    
+            if tokenizers_dirs:
+                latest_tokenizers_dir = sorted(tokenizers_dirs, key=version_sort_key, reverse=True)[0]
+                if latest_tokenizers_dir.is_dir():
+                    tokenizers_count = len([d for d in latest_tokenizers_dir.iterdir() if d.is_dir()])
             
             # Simple heuristic: if we have models and tokenizers, consider up to date
             # In production, this would check actual version metadata
@@ -560,9 +593,17 @@ class ModelsSyncService:
                 result["errors"].append(f"No tokenizers-* directory found in repository")
                 return result
             
-            # Use the first matching directory (could enhance to use version matching)
-            finetuned_dir = finetuned_dirs[0]
-            tokenizers_dir = tokenizers_dirs[0]
+            # Sort directories by version number and use the latest
+            def version_sort_key(path):
+                """Extract version number for sorting (e.g., 'finetuned-0.0.2' -> (0, 0, 2))"""
+                try:
+                    version_str = path.name.split('-', 1)[1]  # Get part after first dash
+                    return tuple(map(int, version_str.split('.')))
+                except (ValueError, IndexError):
+                    return (0, 0, 0)  # Fallback for invalid version format
+            
+            finetuned_dir = sorted(finetuned_dirs, key=version_sort_key, reverse=True)[0]
+            tokenizers_dir = sorted(tokenizers_dirs, key=version_sort_key, reverse=True)[0]
             
             # Create extraction directories with preserved version names
             finetuned_extract = temp_path / finetuned_dir.name  # Preserve finetuned-x.x.x
