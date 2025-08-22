@@ -102,11 +102,57 @@ def validate_bucket_name(bucket_name: str, backend_type: str = "s3") -> str:
     return bucket[:63]  # General safety limit
 
 def safe_file_id(file_path: str, backend_type: str = "appwrite") -> str:
-    """Generate safe file ID for backends that don't support path separators."""
+    """
+    Generate safe file ID for backends that don't support path separators.
+    
+    For Appwrite: file IDs must be ≤36 chars, a-z A-Z 0-9 . - _, can't start with special char.
+    """
     if backend_type == "appwrite":
-        # Appwrite doesn't support nested paths in file IDs
-        # Replace path separators with underscores
-        return file_path.replace("/", "_").replace("\\", "_")
+        import hashlib
+        import re
+        
+        # Clean the path: replace separators and invalid chars
+        cleaned = re.sub(r'[^a-zA-Z0-9._-]', '_', file_path)
+        cleaned = cleaned.replace("/", "_").replace("\\", "_")
+        
+        # Ensure it doesn't start with a special character
+        if cleaned and cleaned[0] in '._-':
+            cleaned = 'f' + cleaned[1:]
+        
+        # If it's short enough, use it directly
+        if len(cleaned) <= 36 and cleaned:
+            return cleaned
+            
+        # If too long, create a hash-based ID
+        # Use first part + hash to maintain some readability
+        hash_suffix = hashlib.md5(file_path.encode()).hexdigest()[:8]
+        
+        # Extract meaningful parts (filename without extension, extension)
+        parts = file_path.split('/')
+        filename = parts[-1] if parts else file_path
+        name_parts = filename.rsplit('.', 1)
+        base_name = name_parts[0]
+        extension = name_parts[1] if len(name_parts) > 1 else ''
+        
+        # Create a readable but short ID
+        if extension:
+            # Format: shortened_name_hash.ext (≤36 chars)
+            max_name_len = 36 - len(hash_suffix) - len(extension) - 2  # 2 for underscore and dot
+            if max_name_len > 0:
+                short_name = re.sub(r'[^a-zA-Z0-9]', '', base_name)[:max_name_len]
+                if short_name:
+                    result = f"{short_name}_{hash_suffix}.{extension}"
+                    if len(result) <= 36:
+                        return result
+            
+            # Fallback: just hash.ext
+            result = f"{hash_suffix}.{extension}"
+            if len(result) <= 36:
+                return result
+        
+        # Final fallback: just the hash (≤36 chars)
+        return hash_suffix[:36]
+    
     return file_path
 
 def split_storage_key(storage_key: str) -> Tuple[str, str]:
@@ -178,6 +224,7 @@ class LocalStorageBackend(StorageBackend):
     def __init__(self, base_path: str):
         self.base_path = Path(base_path)
         self.base_path.mkdir(parents=True, exist_ok=True)
+        self.backend_type = "local"
 
     def _full(self, storage_key: str) -> Path:
         return self.base_path / storage_key.lstrip("/")
@@ -187,9 +234,7 @@ class LocalStorageBackend(StorageBackend):
         p.parent.mkdir(parents=True, exist_ok=True)
         with open(p, "wb") as f:
             f.write(content)
-        if metadata:
-            with open(p.with_suffix(p.suffix + ".meta"), "w") as mf:
-                json.dump(metadata, mf)
+        # Note: metadata is not stored as separate files - all metadata goes to PostgreSQL
         st = p.stat()
         return {
             "$id": storage_key,
@@ -210,9 +255,7 @@ class LocalStorageBackend(StorageBackend):
         p = self._full(storage_key)
         if p.exists():
             p.unlink()
-            mp = p.with_suffix(p.suffix + ".meta")
-            if mp.exists():
-                mp.unlink()
+            # Note: no metadata files to clean up - all metadata is in PostgreSQL
             return True
         return False
 
@@ -573,6 +616,25 @@ class StorageClient:
         if "S3StorageBackend" in t:
             return "s3"
         return "unknown"
+    
+    def get_active_backend_names(self) -> List[str]:
+        """Get list of active backend names for storage tracking."""
+        backend_names = []
+        for backend in self.backends:
+            if hasattr(backend, 'backend_type'):
+                backend_names.append(backend.backend_type)
+            else:
+                # Fallback to class name parsing
+                class_name = type(backend).__name__
+                if 'Local' in class_name:
+                    backend_names.append('local')
+                elif 'Appwrite' in class_name:
+                    backend_names.append('appwrite')
+                elif 'S3' in class_name:
+                    backend_names.append('s3')
+                else:
+                    backend_names.append('unknown')
+        return backend_names
 
     def get_storage_info(self) -> Dict[str, Any]:
         """Get comprehensive storage configuration and health information."""
@@ -660,6 +722,7 @@ class StorageClient:
         try:
             from appwrite.client import Client
             from appwrite.services.storage import Storage
+            from appwrite.input_file import InputFile
             from appwrite.exception import AppwriteException
         except ImportError:
             raise ConfigError("Appwrite SDK not installed. Run: pip install appwrite")
@@ -672,6 +735,7 @@ class StorageClient:
                 self.client.set_key(APPWRITE_STORAGE_API_KEY)
                 self.storage = Storage(self.client)
                 self._bucket_cache: Dict[str, str] = {}
+                self.backend_type = "appwrite"
                 logger.info("Appwrite storage backend initialized", source="storage_client")
 
             def upload(self, storage_key: str, content: bytes, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -687,10 +751,12 @@ class StorageClient:
                     tf.flush()
                     
                     try:
+                        # Create InputFile object from the temporary file
+                        input_file = InputFile.from_path(tf.name)
                         res = self.storage.create_file(
                             bucket_id=bid, 
                             file_id=file_id,
-                            file=tf.name
+                            file=input_file
                         )
                     finally:
                         os.unlink(tf.name)
@@ -992,6 +1058,7 @@ class StorageClient:
                     
                     # Test connection
                     self.s3.list_buckets()
+                    self.backend_type = "s3"
                     logger.info("S3 storage backend initialized", source="storage_client")
                 except (ClientError, NoCredentialsError) as e:
                     raise ConfigError(f"S3 authentication failed: {e}")
@@ -1871,7 +1938,18 @@ class StorageClient:
         for backend_idx in successful_backend_indices:
             try:
                 backend = self.backends[backend_idx]
-                getattr(backend, rollback_op)(*args, **kwargs)
+                
+                # For rollback operations, we need to adjust arguments based on the operation
+                if rollback_op == "delete" and operation == "upload":
+                    # For upload rollback, only pass the storage_key to delete
+                    getattr(backend, rollback_op)(args[0])  # args[0] is storage_key
+                elif rollback_op == "delete_bucket" and operation == "create_bucket":
+                    # For bucket creation rollback, only pass the bucket_name
+                    getattr(backend, rollback_op)(args[0])  # args[0] is bucket_name
+                else:
+                    # For other operations, pass all args (but this shouldn't happen with current rollback_ops)
+                    getattr(backend, rollback_op)(*args, **kwargs)
+                    
                 logger.debug(f"Rollback succeeded on backend {backend_idx}", source="storage_client")
             except Exception as rollback_error:
                 logger.error(f"Rollback failed on backend {backend_idx}: {rollback_error}", source="storage_client")

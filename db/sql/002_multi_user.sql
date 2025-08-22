@@ -164,10 +164,8 @@ CREATE INDEX idx_user_access_logs_success ON user_access_logs(success);
 -- 8. ENHANCE EXISTING TABLES FOR USER AWARENESS
 -- ================================================================
 
--- Add user tracking to research_papers
-ALTER TABLE research_papers ADD COLUMN IF NOT EXISTS uploaded_by VARCHAR(255) REFERENCES users(user_id) ON DELETE SET NULL;
-ALTER TABLE research_papers ADD COLUMN IF NOT EXISTS access_level VARCHAR(20) DEFAULT 'private' CHECK (access_level IN ('private', 'shared', 'public'));
-
+-- Note: User tracking columns for research_papers are now in core schema (001_core.sql)
+-- Creating only indexes that might be missing:
 CREATE INDEX IF NOT EXISTS idx_research_papers_uploaded_by ON research_papers(uploaded_by);
 CREATE INDEX IF NOT EXISTS idx_research_papers_access_level ON research_papers(access_level);
 

@@ -999,6 +999,7 @@ class SetupService:
                 # Track what we're creating
                 session_tables = []
                 session_indexes = []
+                deferred_indexes = []  # For indexes on columns that need to be added first
                 
                 for statement in sql_statements:
                     statement_upper = statement.upper()
@@ -1012,29 +1013,65 @@ class SetupService:
                             # Non-fatal if table doesn't exist
                             logger.debug("Table drop failed (may not exist)", source="setup_service", error=str(e))
                     
-                    elif statement_upper.startswith('CREATE TABLE'):
-                        # Extract table name for tracking
-                        table_name = "unknown_table"  # Default value for error handling
-                        table_match = statement_upper.split('CREATE TABLE IF NOT EXISTS ')
-                        if len(table_match) > 1:
-                            table_name = table_match[1].split(' ')[0].split('(')[0].strip()
-                            session_tables.append(table_name)
+                    # Handle statements that contain multiple CREATE TABLE commands
+                    if 'CREATE TABLE' in statement_upper:
+                        # Split by CREATE TABLE to extract individual table definitions
+                        table_parts = statement.split('CREATE TABLE')
                         
-                        try:
-                            self.postgres_client.run(statement)
-                            logger.info(f"Created session table", source="setup_service", table=table_name)
-                        except Exception as e:
-                            logger.error(f"Failed to create session table", source="setup_service", 
-                                       table=table_name, error=str(e))
-                            result["details"] += f"Table {table_name} error: {str(e)}; "
+                        for i, part in enumerate(table_parts):
+                            if i == 0:  # Skip the first part (comments/headers)
+                                continue
+                                
+                            # Reconstruct the CREATE TABLE statement
+                            table_statement = 'CREATE TABLE' + part
+                            
+                            # Extract table name for tracking
+                            table_name = "unknown_table"
+                            try:
+                                # Find the table name (first word after CREATE TABLE)
+                                lines = table_statement.split('\n')
+                                first_line = lines[0].strip()
+                                table_name = first_line.replace('CREATE TABLE', '').strip().split(' ')[0].split('(')[0].strip()
+                                session_tables.append(table_name)
+                            except:
+                                pass
+                            
+                            try:
+                                self.postgres_client.run(table_statement)
+                                logger.info(f"Created session table", source="setup_service", table=table_name)
+                            except Exception as e:
+                                logger.error(f"Failed to create session table", source="setup_service", 
+                                           table=table_name, error=str(e))
+                                result["details"] += f"Table {table_name} error: {str(e)}; "
                     
-                    elif statement_upper.startswith('CREATE INDEX'):
+                    elif statement_upper.startswith('CREATE INDEX') or statement_upper.startswith('CREATE UNIQUE INDEX'):
                         # Extract index name for tracking
                         index_name = "unknown_index"  # Default value for error handling
-                        index_match = statement_upper.split('CREATE INDEX IF NOT EXISTS ')
-                        if len(index_match) > 1:
-                            index_name = index_match[1].split(' ')[0].strip()
-                            session_indexes.append(index_name)
+                        
+                        # Special handling for indexes on columns that might not exist yet
+                        if ('uploaded_by' in statement or 'created_by' in statement):
+                            # Check if these indexes depend on columns that need to be added first
+                            # Skip these for now and process them after ALTER TABLE statements
+                            logger.debug(f"Deferring index creation for user-aware columns", 
+                                       source="setup_service", statement=statement[:100])
+                            deferred_indexes.append(statement)
+                            continue
+                        
+                        # Handle various CREATE INDEX patterns
+                        if 'CREATE INDEX IF NOT EXISTS' in statement_upper:
+                            index_match = statement_upper.split('CREATE INDEX IF NOT EXISTS ')
+                            if len(index_match) > 1:
+                                index_name = index_match[1].split(' ')[0].strip()
+                        elif 'CREATE UNIQUE INDEX' in statement_upper:
+                            index_match = statement_upper.split('CREATE UNIQUE INDEX ')
+                            if len(index_match) > 1:
+                                index_name = index_match[1].split(' ')[0].strip()
+                        else:
+                            index_match = statement_upper.split('CREATE INDEX ')
+                            if len(index_match) > 1:
+                                index_name = index_match[1].split(' ')[0].strip()
+                        
+                        session_indexes.append(index_name)
                         
                         try:
                             self.postgres_client.run(statement)
@@ -1043,6 +1080,14 @@ class SetupService:
                             logger.warning(f"Failed to create session index", source="setup_service",
                                          index=index_name, error=str(e))
                     
+                    elif statement_upper.startswith('ALTER TABLE'):
+                        # Execute ALTER TABLE statements
+                        try:
+                            self.postgres_client.run(statement)
+                            logger.debug("Executed ALTER TABLE statement", source="setup_service")
+                        except Exception as e:
+                            logger.warning("Failed to execute ALTER TABLE", source="setup_service", error=str(e))
+                    
                     elif statement_upper.startswith('CREATE FUNCTION') or statement_upper.startswith('CREATE OR REPLACE FUNCTION'):
                         # Execute function creation
                         try:
@@ -1050,6 +1095,58 @@ class SetupService:
                             logger.info("Created session management function", source="setup_service")
                         except Exception as e:
                             logger.warning("Failed to create session function", source="setup_service", error=str(e))
+                    
+                    elif statement_upper.startswith('CREATE VIEW') or statement_upper.startswith('CREATE OR REPLACE VIEW'):
+                        # Execute view creation
+                        try:
+                            self.postgres_client.run(statement)
+                            logger.debug("Created session management view", source="setup_service")
+                        except Exception as e:
+                            logger.warning("Failed to create session view", source="setup_service", error=str(e))
+                    
+                    elif statement_upper.startswith('CREATE TRIGGER'):
+                        # Execute trigger creation
+                        try:
+                            self.postgres_client.run(statement)
+                            logger.debug("Created session management trigger", source="setup_service")
+                        except Exception as e:
+                            logger.warning("Failed to create session trigger", source="setup_service", error=str(e))
+                    
+                    elif statement_upper.startswith('INSERT INTO'):
+                        # Execute data inserts
+                        try:
+                            self.postgres_client.run(statement)
+                            logger.debug("Executed session management data insert", source="setup_service")
+                        except Exception as e:
+                            logger.warning("Failed to execute data insert", source="setup_service", error=str(e))
+                
+                # Process deferred indexes after all schema changes are complete
+                logger.info(f"Processing {len(deferred_indexes)} deferred indexes", source="setup_service")
+                for deferred_statement in deferred_indexes:
+                    try:
+                        # Extract index name for tracking
+                        statement_upper = deferred_statement.upper()
+                        index_name = "unknown_deferred_index"
+                        
+                        if 'CREATE INDEX IF NOT EXISTS' in statement_upper:
+                            index_match = statement_upper.split('CREATE INDEX IF NOT EXISTS ')
+                            if len(index_match) > 1:
+                                index_name = index_match[1].split(' ')[0].strip()
+                        elif 'CREATE UNIQUE INDEX' in statement_upper:
+                            index_match = statement_upper.split('CREATE UNIQUE INDEX ')
+                            if len(index_match) > 1:
+                                index_name = index_match[1].split(' ')[0].strip()
+                        else:
+                            index_match = statement_upper.split('CREATE INDEX ')
+                            if len(index_match) > 1:
+                                index_name = index_match[1].split(' ')[0].strip()
+                        
+                        self.postgres_client.run(deferred_statement)
+                        session_indexes.append(index_name)
+                        logger.debug(f"Created deferred session index", source="setup_service", index=index_name)
+                    except Exception as e:
+                        logger.error(f"Failed to create deferred session index", source="setup_service",
+                                   index=index_name, error=str(e))
                 
                 result["tables_created"] = session_tables
                 result["indexes_created"] = session_indexes

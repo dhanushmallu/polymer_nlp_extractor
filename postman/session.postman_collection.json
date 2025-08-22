@@ -1,0 +1,196 @@
+{
+	"info": {
+		"name": "Polymer NLP Extractor - SESSION",
+		"description": "User session management and lifecycle operations for multi-user polymer extraction workflows. Provides endpoints for creating users, managing sessions, resource allocation, and monitoring session health with proper UUID handling and authentication.",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"variable": [
+		{
+			"key": "pnlp",
+			"value": "http://localhost:8000",
+			"description": "Base URL for Polymer NLP Extractor API"
+		},
+		{
+			"key": "default_user_id",
+			"value": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+			"description": "Default user UUID for testing (UUID format required)"
+		},
+		{
+			"key": "default_session_id",
+			"value": "550e8400-e29b-41d4-a716-446655440000",
+			"description": "Default session UUID for testing (will be updated by session creation)"
+		}
+	],
+	"item": [
+		{
+			"name": "Create User",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"user_id\": \"{{default_user_id}}\",\n    \"username\": \"demo_researcher\",\n    \"email\": \"demo@polymer-research.com\",\n    \"display_name\": \"Demo Researcher\",\n    \"organization\": \"Polymer Research Lab\",\n    \"user_role\": \"researcher\",\n    \"storage_quota_gb\": 15.0,\n    \"max_concurrent_sessions\": 5\n}"
+				},
+				"url": {
+					"raw": "{{pnlp}}/api/session/user/create",
+					"host": ["{{pnlp}}"],
+					"path": ["api", "session", "user", "create"]
+				},
+				"description": "Create a new user account for session management. Required before creating sessions for the user. Sets up user quotas, permissions, and storage allocation.\n\n**Parameters:**\n- user_id: Unique UUID for the user\n- username: Human-readable username\n- email: User email address\n- display_name: Display name for UI\n- organization: User's organization\n- user_role: admin, researcher, or guest\n- storage_quota_gb: Storage quota in GB\n- max_concurrent_sessions: Maximum concurrent sessions allowed\n\n**Response:** Created user information with UUID and settings\n\n**Use Cases:**\n- Initial user setup\n- User onboarding\n- Permission and quota configuration"
+			},
+			"response": []
+		},
+		{
+			"name": "Get User Info",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{pnlp}}/api/session/user/{{default_user_id}}/info",
+					"host": ["{{pnlp}}"],
+					"path": ["api", "session", "user", "{{default_user_id}}", "info"]
+				},
+				"description": "Get comprehensive user information including quotas, session statistics, and recent activity. Useful for monitoring user resource usage and session patterns.\n\n**Parameters:**\n- user_id: UUID of the user to query\n\n**Response:** User information including:\n- Active session count\n- Total sessions created\n- Recent session history\n- Storage usage statistics\n\n**Use Cases:**\n- User dashboard information\n- Quota monitoring\n- Session usage analysis\n- Resource planning"
+			},
+			"response": []
+		},
+		{
+			"name": "Create Session",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"// Validate response and extract session ID",
+							"pm.test('Session creation successful', function () {",
+							"    pm.response.to.have.status(200);",
+							"    const response = pm.response.json();",
+							"    pm.expect(response.success).to.be.true;",
+							"    pm.expect(response.data.session_id).to.be.a('string');",
+							"});",
+							"",
+							"// Store session ID for subsequent requests",
+							"if (pm.response.code === 200) {",
+							"    const response = pm.response.json();",
+							"    if (response.success && response.data.session_id) {",
+							"        pm.collectionVariables.set('default_session_id', response.data.session_id);",
+							"        console.log('Session ID updated:', response.data.session_id);",
+							"    }",
+							"}"
+						],
+						"type": "text/javascript"
+					}
+				}
+			],
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"user_id\": \"{{default_user_id}}\",\n    \"session_name\": \"polymer_conductivity_analysis\",\n    \"resource_requirements\": {\n        \"models\": [\"bert_polymer\", \"roberta_ensemble\"],\n        \"memory_gb\": 4.0,\n        \"cpu_cores\": 2,\n        \"storage_gb\": 2.0,\n        \"priority\": 3\n    },\n    \"metadata\": {\n        \"experiment_id\": \"exp_2025_polymer_conductivity\",\n        \"department\": \"materials_science\",\n        \"project\": \"polymer_property_extraction\"\n    },\n    \"expires_in_minutes\": 120\n}"
+				},
+				"url": {
+					"raw": "{{pnlp}}/api/session/create",
+					"host": ["{{pnlp}}"],
+					"path": ["api", "session", "create"]
+				},
+				"description": "Create a new user session with resource allocation and automatic UUID generation. Returns session UUID that can be used with GROBID and other APIs.\n\n**Parameters:**\n- user_id: UUID of the session owner\n- session_name: Descriptive name for the session\n- resource_requirements: Resource allocation specifications\n- metadata: Additional session metadata for tracking\n- expires_in_minutes: Session expiration time\n\n**Response:** Session information with UUID, status, and allocated resources\n\n**Use Cases:**\n- Starting new extraction workflows\n- Resource allocation for batch processing\n- Session-aware document processing\n- Multi-user environment management\n\n**Note:** The session UUID returned here can be used directly with GROBID and other APIs that require session validation."
+			},
+			"response": []
+		},
+		{
+			"name": "Get Session Details",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{pnlp}}/api/session/{{default_session_id}}",
+					"host": ["{{pnlp}}"],
+					"path": ["api", "session", "{{default_session_id}}"]
+				},
+				"description": "Retrieve detailed information about a specific session including status, resource allocation, and activity timestamps.\n\n**Parameters:**\n- session_id: UUID of the session to query\n\n**Response:** Complete session information including:\n- Session status and lifecycle state\n- Resource requirements and allocations\n- Creation and activity timestamps\n- Storage prefix and isolation details\n- Associated metadata\n\n**Use Cases:**\n- Session monitoring and debugging\n- Resource usage verification\n- Activity tracking\n- Status validation before API calls"
+			},
+			"response": []
+		},
+		{
+			"name": "List User Sessions",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{pnlp}}/api/session/user/{{default_user_id}}?status_filter=active",
+					"host": ["{{pnlp}}"],
+					"path": ["api", "session", "user", "{{default_user_id}}"],
+					"query": [
+						{
+							"key": "status_filter",
+							"value": "active",
+							"description": "Filter sessions by status (active, processing, completed, etc.)"
+						}
+					]
+				},
+				"description": "List all sessions for a specific user with optional status filtering. Useful for session management and monitoring user activity.\n\n**Parameters:**\n- user_id: UUID of the user whose sessions to list\n- status_filter: Optional filter by session status\n\n**Status Values:**\n- active: Currently active sessions\n- processing: Sessions running extractions\n- idle: Active but inactive sessions\n- completed: Finished sessions\n- failed: Failed sessions\n- expired: Expired sessions\n\n**Response:** List of user sessions with basic information\n\n**Use Cases:**\n- User session dashboard\n- Resource usage monitoring\n- Session cleanup identification\n- Concurrent session tracking"
+			},
+			"response": []
+		},
+		{
+			"name": "Get Session Health",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{pnlp}}/api/session/{{default_session_id}}/health",
+					"host": ["{{pnlp}}"],
+					"path": ["api", "session", "{{default_session_id}}", "health"]
+				},
+				"description": "Get comprehensive health status and resource usage for a session. Provides detailed monitoring information for session diagnostics.\n\n**Parameters:**\n- session_id: UUID of the session to check\n\n**Response:** Session health information including:\n- Overall health status\n- Resource utilization metrics\n- Performance indicators\n- Time to expiry\n- Activity statistics\n\n**Use Cases:**\n- Session monitoring and alerting\n- Resource usage optimization\n- Performance troubleshooting\n- Capacity planning\n- Health dashboard displays"
+			},
+			"response": []
+		},
+		{
+			"name": "Terminate Session",
+			"request": {
+				"method": "DELETE",
+				"header": [],
+				"url": {
+					"raw": "{{pnlp}}/api/session/{{default_session_id}}?save_results=true",
+					"host": ["{{pnlp}}"],
+					"path": ["api", "session", "{{default_session_id}}"],
+					"query": [
+						{
+							"key": "save_results",
+							"value": "true",
+							"description": "Whether to save session results before termination"
+						}
+					]
+				},
+				"description": "Terminate a session and cleanup allocated resources. Optionally saves session results before termination.\n\n**Parameters:**\n- session_id: UUID of the session to terminate\n- save_results: Whether to save session results (default: true)\n\n**Response:** Termination confirmation with cleanup details\n\n**Use Cases:**\n- Manual session cleanup\n- Resource deallocation\n- Emergency session termination\n- Planned session shutdown\n- Resource optimization\n\n**Note:** Terminated sessions cannot be reactivated. Ensure all important data is saved before termination."
+			},
+			"response": []
+		},
+		{
+			"name": "System Status",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{pnlp}}/api/session/system/status",
+					"host": ["{{pnlp}}"],
+					"path": ["api", "session", "system", "status"]
+				},
+				"description": "Get overall session management system status and resource utilization across all users and sessions.\n\n**Response:** System-wide session management information including:\n- Session management availability\n- Resource utilization summary\n- System capacity metrics\n- Overall health indicators\n\n**Use Cases:**\n- System monitoring dashboards\n- Capacity planning\n- Resource allocation optimization\n- System health checks\n- Administrative oversight\n\n**Note:** Provides aggregate information useful for system administrators and monitoring tools."
+			},
+			"response": []
+		}
+	]
+}
